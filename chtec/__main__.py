@@ -29,6 +29,7 @@ def main():
     store = SettingsStore(config_path)
     try:
         profiles = store.load_profiles()
+        errors.extend(store.warnings)
     except AppError as exc:
         errors.append(str(exc))
         profiles = default_profiles(LocalSettings())
@@ -42,6 +43,7 @@ def main():
     paths = [path for path in sys.argv[1:] if Path(path).is_file()]
     if paths:
         QTimer.singleShot(0, lambda: window.load_paths(paths))
+    QTimer.singleShot(250, window.restore_connection)
     interrupts = ConsoleInterruptHandler(window)
     try:
         return app.exec()

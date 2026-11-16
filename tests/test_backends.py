@@ -9,6 +9,24 @@ from chtec.domain import AppError
 from chtec.llm import LocalSettings
 
 
+def test_llama_cpp_lm_load_omits_vllm_only_engine_flags(monkeypatch):
+    from threading import Event
+
+    from chtec.backends.manager import BackendManager
+
+    manager = BackendManager()
+    commands = []
+    monkeypatch.setattr(manager, "_command", lambda args, *a, **k: commands.append(args))
+    monkeypatch.setattr(
+        "chtec.backends.manager.LocalModel.models", lambda model: [manager.lm_instance[1]]
+    )
+    manager._start_lm(
+        "lms.exe", "missing.exe", LocalSettings(ocr_model="vision"), 8192, Event(), lambda s: None
+    )
+    load = next(args for args in commands if args[1] == "load")
+    assert "--no-engine-config-file" not in load
+
+
 def test_profiles_do_not_share_urls_models_or_keys():
     profiles = default_profiles(LocalSettings(ocr_model="vision", api_key="lm-secret"))
     profiles.switch("unsloth")

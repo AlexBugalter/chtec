@@ -381,7 +381,6 @@ class BackendManager:
                 "--context-length",
                 str(context),
                 "--yes",
-                "--no-engine-config-file",
             ],
             cancel,
             600,

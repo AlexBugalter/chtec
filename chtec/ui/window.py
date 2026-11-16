@@ -1,4 +1,5 @@
 import copy
+from dataclasses import replace
 from pathlib import Path
 
 from PySide6.QtCore import QElapsedTimer, QSize, Qt, QTimer
@@ -23,9 +24,11 @@ from PySide6.QtWidgets import (
 )
 
 from chtec import __version__
+from chtec.backends.catalog import ModelEntry, catalog
 from chtec.domain import MAX_PAGES, AppError, Document, validate_image_budget
 from chtec.layout_recognition import LayoutRecognitionService
 from chtec.llm import LocalModel, LocalSettings
+from chtec.providers import PROVIDERS, CloudSettings, create_model, destination
 from chtec.regions import ImageRegion, RegionRecognitionService
 from chtec.services import DocumentService
 from chtec.ui.dialogs import ExportPreviewDialog, ProposalDialog, SettingsDialog
@@ -51,12 +54,13 @@ class MainWindow(QMainWindow):
         self.profiles = profiles
         self.backend_manager = backend_manager
         self.runtime_settings = None
+        self.model_catalogs = {}
         self.binding_area = None
         self.document = Document()
         self.dirty = False
         self.worker = None
         self.close_after_task = False
-        self.setWindowTitle(f"Чтец {__version__}[*] — локальная оцифровка рукописей")
+        self.setWindowTitle(f"Чтец {__version__}[*] — оцифровка рукописей")
         self.resize(1380, 880)
         self.setMinimumSize(1000, 680)
         self.setStyleSheet(STYLE)
@@ -93,7 +97,7 @@ class MainWindow(QMainWindow):
         header.addWidget(subtitle)
         header.addStretch()
         self.open_button = self.button("+ Добавить файлы", self.open_files, True)
-        self.settings_button = self.button("Локальная модель", self.open_settings)
+        self.settings_button = self.button("Настройки ИИ", self.open_settings)
         self.new_button = self.button("Новый документ", self.new_document)
         header.addWidget(self.new_button)
         header.addWidget(self.settings_button)
@@ -104,20 +108,31 @@ class MainWindow(QMainWindow):
             backend_row = QHBoxLayout()
             backend_row.addWidget(QLabel("Система"))
             self.backend_selector = QComboBox()
-            self.backend_selector.addItem("LM Studio", "lmstudio")
-            self.backend_selector.addItem("Unsloth", "unsloth")
+            for name, provider in PROVIDERS.items():
+                self.backend_selector.addItem(provider.title, name)
             self.backend_selector.setCurrentIndex(
                 self.backend_selector.findData(self.profiles.selected)
             )
             self.backend_selector.currentIndexChanged.connect(self.switch_backend)
             backend_row.addWidget(self.backend_selector)
-            self.activate_button = self.button(
-                "Активировать: запустить и загрузить", self.activate_backend
+            backend_row.addWidget(QLabel("Модель"))
+            self.model_selector = QComboBox()
+            self.model_selector.setMinimumWidth(220)
+            self.model_selector.setMaximumWidth(390)
+            self.model_selector.setSizeAdjustPolicy(
+                QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
             )
+            self.model_selector.currentIndexChanged.connect(self.switch_model)
+            backend_row.addWidget(self.model_selector, 1)
+            self.refresh_models_button = self.button("↻", self.refresh_models)
+            self.refresh_models_button.setToolTip("Обновить каталог доступных моделей")
+            backend_row.addWidget(self.refresh_models_button)
+            self.activate_button = self.button("Подключить", self.activate_backend)
             backend_row.addWidget(self.activate_button)
-            self.backend_status = QLabel("Выберите систему и активируйте локальную модель.")
-            backend_row.addWidget(self.backend_status, 1)
+            self.backend_status = QLabel("Выберите платформу и модель.")
             root.addLayout(backend_row)
+            self.backend_status.setWordWrap(True)
+            root.addWidget(self.backend_status)
 
         toolbar = QHBoxLayout()
         self.model_label = QLabel()
@@ -281,6 +296,8 @@ class MainWindow(QMainWindow):
         if self.profiles is not None:
             self.backend_selector.setEnabled(not busy)
             self.activate_button.setEnabled(not busy)
+            self.model_selector.setEnabled(not busy)
+            self.refresh_models_button.setEnabled(not busy)
         has_page = self.current_page is not None
         for button in (self.open_button, self.settings_button, self.new_button):
             button.setEnabled(not busy)
@@ -310,7 +327,9 @@ class MainWindow(QMainWindow):
             self.region_select_button.setChecked(False)
             self.image.set_selection_mode(False)
         self.model_label.setText(
-            "● Локальный API · "
+            "● "
+            + destination(self.settings)
+            + " · "
             + ((self.runtime_settings or self.settings).ocr_model or "модель не выбрана")
         )
         self.model_label.setToolTip(self.settings.base_url)
@@ -511,7 +530,7 @@ class MainWindow(QMainWindow):
         page = self.current_page
         snapshot = copy.deepcopy(page)
         try:
-            service = LayoutRecognitionService(LocalModel(self.model_settings))
+            service = LayoutRecognitionService(self.language_model())
         except AppError as exc:
             self.show_error(str(exc))
             return
@@ -544,7 +563,7 @@ class MainWindow(QMainWindow):
             return
         snapshot = copy.deepcopy(page)
         try:
-            service = LayoutRecognitionService(LocalModel(self.model_settings))
+            service = LayoutRecognitionService(self.language_model())
         except AppError as exc:
             self.show_error(str(exc))
             return
@@ -659,7 +678,7 @@ class MainWindow(QMainWindow):
         suffix = visible.encode("utf-16-le")[end * 2 :].decode("utf-16-le")
         region = ImageRegion(*self.image.selected_region).validated()
         try:
-            service = RegionRecognitionService(LocalModel(self.model_settings))
+            service = RegionRecognitionService(self.language_model())
         except AppError as exc:
             self.show_error(str(exc))
             return
@@ -694,7 +713,7 @@ class MainWindow(QMainWindow):
         page = self.current_page
         snapshot = copy.deepcopy(page)
         try:
-            service = RegionRecognitionService(LocalModel(self.model_settings))
+            service = RegionRecognitionService(self.language_model())
         except AppError as exc:
             self.show_error(str(exc))
             return
@@ -758,6 +777,8 @@ class MainWindow(QMainWindow):
         self.worker.start()
 
     def task_finished(self):
+        # finished can precede native thread teardown; join before disposing Qt objects.
+        self.worker.wait()
         self.worker.deleteLater()
         self.worker = None
         self.progress_bar.hide()
@@ -818,51 +839,89 @@ class MainWindow(QMainWindow):
         except AppError as exc:
             self.show_error(str(exc))
 
+    def language_model(self):
+        settings = self.model_settings
+        return (
+            create_model(settings) if isinstance(settings, CloudSettings) else LocalModel(settings)
+        )
+
+    def save_connection(self):
+        if self.settings_store:
+            self.settings_store.save_profiles(self.profiles)
+
     def open_settings(self):
         if self.worker:
             return
-        dialog = (
-            SettingsDialog(
-                self.settings,
-                self,
-                profile=self.profiles.active,
-                runtime_settings=self.runtime_settings,
-            )
-            if self.profiles is not None
-            else SettingsDialog(self.settings, self)
+        dialog = SettingsDialog(
+            self.settings,
+            self,
+            profile=self.profiles.active if self.profiles else None,
+            runtime_settings=self.runtime_settings,
         )
-        if dialog.exec() == QDialog.DialogCode.Accepted:
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        try:
             if self.profiles is not None:
                 candidate = copy.deepcopy(self.profiles)
                 candidate.profiles[candidate.selected] = dialog.profile_value()
-                try:
-                    candidate.validated()
-                except AppError as exc:
-                    self.show_error(str(exc))
-                    return
+                candidate.validated()
+                if self.settings_store:
+                    self.settings_store.save_profiles(candidate)
                 self.profiles = candidate
+                self.settings = candidate.active.settings
+                self.model_catalogs.pop(candidate.selected, None)
                 self.runtime_settings = None
-                self.backend_status.setText("Настройки изменены. Нажмите «Активировать».")
-            self.settings = (
-                self.profiles.active.settings if self.profiles is not None else dialog.value()
-            )
-            if self.settings_store:
-                try:
-                    if self.profiles is not None:
-                        self.settings_store.save_profiles(self.profiles)
-                    else:
-                        self.settings_store.save(self.settings)
-                except AppError as exc:
-                    self.show_error(str(exc))
-            self.refresh_controls()
+                self.activate_backend()
+            else:
+                self.settings = dialog.value()
+                if self.settings_store:
+                    self.settings_store.save(self.settings)
+        except AppError as exc:
+            self.show_error(str(exc))
+        self.refresh_controls()
 
     @property
     def model_settings(self):
         if self.profiles is not None and self.runtime_settings is None:
-            raise AppError(
-                "Сначала нажмите «Активировать: запустить и загрузить» для выбранной системы."
-            )
+            raise AppError("Модель ещё не подключена. Выберите её или нажмите «Подключить».")
         return self.runtime_settings or self.settings
+
+    def fill_models(self, entries):
+        if self.profiles is None:
+            return
+        selected = (
+            self.profiles.active.model_path
+            if self.profiles.selected == "unsloth"
+            else self.settings.ocr_model
+        )
+        self.model_selector.blockSignals(True)
+        self.model_selector.clear()
+        for entry in entries:
+            self.model_selector.addItem(entry.label, entry)
+        index = next((i for i, e in enumerate(entries) if e.id == selected), -1)
+        if index < 0 and selected:
+            entry = ModelEntry(selected, Path(selected).name)
+            self.model_selector.addItem(entry.label, entry)
+            index = self.model_selector.count() - 1
+        self.model_selector.setCurrentIndex(index)
+        self.model_selector.blockSignals(False)
+
+    def switch_model(self):
+        if self.worker or self.profiles is None:
+            return
+        entry = self.model_selector.currentData()
+        if entry is None:
+            return
+        profile = self.profiles.active
+        profile.settings = replace(profile.settings, ocr_model=entry.id)
+        if isinstance(profile.settings, CloudSettings):
+            profile.settings = replace(profile.settings, vision=entry.vision)
+        else:
+            profile.settings = replace(profile.settings, edit_model=entry.id)
+        if profile.name == "unsloth":
+            profile.model_path = entry.path or entry.id
+        self.settings = profile.settings
+        self.activate_backend()
 
     def switch_backend(self):
         if self.worker or self.profiles is None:
@@ -870,57 +929,129 @@ class MainWindow(QMainWindow):
         selected = self.backend_selector.currentData()
         if selected == self.profiles.selected:
             return
+        self.profiles.switch(selected)
+        self.settings = self.profiles.active.settings
+        self.runtime_settings = None
+        self.fill_models(self.model_catalogs.get(selected, []))
+        self.backend_status.setText(destination(self.settings) + " · подключение…")
+        if isinstance(self.settings, CloudSettings) and not self.settings.api_key:
+            self.backend_status.setText(
+                destination(self.settings) + " · введите API-ключ в настройках."
+            )
+            self.open_settings()
+        else:
+            self.activate_backend()
 
-        def switched(_):
-            self.profiles.switch(selected)
-            self.settings = self.profiles.active.settings
+    def refresh_models(self):
+        if self.worker or self.profiles is None:
+            return
+        self.model_catalogs.pop(self.profiles.selected, None)
+        self.activate_backend(catalog_only=True)
+
+    def activate_backend(self, checked=False, *, catalog_only=False):
+        if self.worker or self.profiles is None:
+            return
+        previous_runtime = self.runtime_settings if catalog_only else None
+        if not catalog_only:
             self.runtime_settings = None
-            self.backend_status.setText("Система переключена. Нажмите «Активировать».")
-            if self.settings_store:
-                try:
-                    self.settings_store.save_profiles(self.profiles)
-                except AppError as exc:
-                    self.show_error(str(exc))
+        profile = copy.deepcopy(self.profiles.active)
+        cached = self.model_catalogs.get(profile.name)
+        self.backend_status.setText(destination(profile.settings) + " · получение каталога…")
+
+        def connect(worker):
+            query = copy.deepcopy(profile)
+            query.settings = replace(query.settings, timeout=min(query.settings.timeout, 20))
+            entries = cached if cached is not None else catalog(query, cancel=worker.cancel)
+            if worker.cancel.is_set():
+                raise AppError("Подключение отменено.")
+            if catalog_only:
+                return profile, entries, previous_runtime
+            selected = (
+                profile.model_path if profile.name == "unsloth" else profile.settings.ocr_model
+            )
+            entry = next((e for e in entries if e.id == selected), None)
+            if entry is None and not selected:
+                entry = next((e for e in entries if e.vision is True), None)
+                entry = entry or next((e for e in entries if e.vision is not False), None)
+            if entry:
+                profile.settings = replace(profile.settings, ocr_model=entry.id)
+                if isinstance(profile.settings, CloudSettings):
+                    profile.settings = replace(profile.settings, vision=entry.vision)
+                else:
+                    profile.settings = replace(profile.settings, edit_model=entry.id)
+                if profile.name == "unsloth":
+                    profile.model_path = entry.path or entry.id
+            if not profile.settings.ocr_model:
+                raise AppError(
+                    "Модели не найдены. Укажите модель в настройках и повторите подключение."
+                )
+            profile.settings.validated()
+            if isinstance(profile.settings, CloudSettings):
+                if not profile.settings.api_key:
+                    raise AppError("Введите API-ключ в настройках выбранного поставщика.")
+                if not any(e.id == profile.settings.ocr_model for e in entries):
+                    raise AppError(
+                        "Модель отсутствует в каталоге этого API-ключа. Выберите доступную."
+                    )
+                self.backend_manager.deactivate()
+                runtime = profile.settings
+            else:
+                runtime = self.backend_manager.activate(
+                    profile, worker.cancel, lambda text: worker.progress.emit(0, text)
+                )
+            if worker.cancel.is_set():
+                self.backend_manager.deactivate()
+                raise AppError("Подключение отменено.")
+            return profile, entries, runtime
+
+        def ready(result):
+            updated, entries, runtime = result
+            self.profiles.profiles[updated.name] = updated
+            self.settings = updated.settings
+            self.model_catalogs[updated.name] = entries
+            self.fill_models(entries)
+            self.runtime_settings = runtime
+            self.backend_status.setText(
+                destination(self.settings)
+                + (
+                    " · Готово · " + self.settings.ocr_model
+                    if runtime
+                    else " · каталог обновлён; выберите модель."
+                )
+            )
+            self.backend_status.setToolTip(self.settings.base_url)
+            try:
+                self.save_connection()
+            except AppError as exc:
+                self.show_error(str(exc))
+
+        self.run_task(
+            connect, ready, lambda _, text: self.backend_status.setText(text), cancellable=True
+        )
 
         def failed(message):
-            self.backend_selector.blockSignals(True)
-            self.backend_selector.setCurrentIndex(
-                self.backend_selector.findData(self.profiles.selected)
+            self.runtime_settings = previous_runtime
+            state = (
+                " · подключение сохранено; каталог недоступен: "
+                if previous_runtime
+                else " · не подключено: "
             )
-            self.backend_selector.blockSignals(False)
-            self.show_error(message)
+            self.backend_status.setText(destination(self.settings) + state + message)
+            if not self.close_after_task and not self.worker.cancel.is_set():
+                self.show_error(message)
 
-        self.run_task(lambda _: self.backend_manager.deactivate(), switched)
         self.worker.error.disconnect(self.show_error)
         self.worker.error.connect(failed)
 
-    def activate_backend(self):
-        if self.worker or self.profiles is None:
+    def restore_connection(self):
+        if self.close_after_task:
             return
-        self.runtime_settings = None
-        profile = copy.deepcopy(self.profiles.active)
-        self.backend_status.setText("Запуск и загрузка…")
-
-        def ready(settings):
-            self.runtime_settings = settings
-            self.backend_status.setText("Готово · " + settings.ocr_model)
-            self.backend_status.setToolTip(settings.base_url)
-
-        self.run_task(
-            lambda worker: self.backend_manager.activate(
-                profile, worker.cancel, lambda text: worker.progress.emit(0, text)
-            ),
-            ready,
-            lambda _, text: self.backend_status.setText(text),
-            cancellable=True,
-        )
-
-        def activation_failed(message):
-            self.backend_status.setText("Активация не выполнена. Проверьте настройки.")
-            self.show_error(message)
-
-        self.worker.error.disconnect(self.show_error)
-        self.worker.error.connect(activation_failed)
+        if self.worker:
+            QTimer.singleShot(500, self.restore_connection)
+        elif self.profiles and (self.settings.ocr_model or self.profiles.active.model_path):
+            self.activate_backend()
+        elif self.profiles and not isinstance(self.settings, CloudSettings):
+            self.refresh_models()
 
     def recognize(self, all_pages):
         if self.current_page and self.current_page.blocks:
@@ -931,6 +1062,8 @@ class MainWindow(QMainWindow):
             return
         if not (self.runtime_settings or self.settings).ocr_model:
             self.open_settings()
+            if self.worker:
+                return
             if not (self.runtime_settings or self.settings).ocr_model:
                 return
         indices = (
@@ -947,7 +1080,7 @@ class MainWindow(QMainWindow):
             if answer != QMessageBox.StandardButton.Yes:
                 return
         try:
-            model = LocalModel(self.model_settings)
+            model = self.language_model()
         except AppError as exc:
             self.show_error(str(exc))
             return
@@ -994,7 +1127,7 @@ class MainWindow(QMainWindow):
             return
         original = next(b.text for b in page.blocks if b.id == block_id) if block_id else page.text
         try:
-            model = LocalModel(self.model_settings)
+            model = self.language_model()
         except AppError as exc:
             self.show_error(str(exc))
             return

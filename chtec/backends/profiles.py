@@ -3,6 +3,7 @@ from urllib.parse import urlsplit
 
 from chtec.domain import AppError
 from chtec.llm import LocalSettings
+from chtec.providers import PROVIDERS, CloudSettings
 
 
 @dataclass
@@ -30,13 +31,22 @@ class BackendProfiles:
         self.selected = name
 
     def validated(self):
-        if set(self.profiles) != {"lmstudio", "unsloth"} or self.selected not in self.profiles:
+        if set(self.profiles) != set(PROVIDERS) or self.selected not in self.profiles:
             raise AppError("Повреждены профили локальных систем.")
         ports = []
         for name, profile in self.profiles.items():
             if profile.name != name or not 512 <= profile.context_length <= 131072:
                 raise AppError("Проверьте профиль и размер контекста.")
             profile.settings = profile.settings.validated()
+            if name not in ("lmstudio", "unsloth"):
+                if (
+                    not isinstance(profile.settings, CloudSettings)
+                    or profile.settings.provider != name
+                ):
+                    raise AppError("Настройки API не соответствуют выбранному поставщику.")
+                continue
+            if isinstance(profile.settings, CloudSettings):
+                raise AppError("Локальная система требует локального адреса API.")
             parts = urlsplit(profile.settings.base_url)
             ports.append(parts.port or (443 if parts.scheme == "https" else 80))
         if len(set(ports)) != len(ports):
@@ -45,7 +55,7 @@ class BackendProfiles:
 
 
 def default_profiles(settings=None):
-    return BackendProfiles(
+    result = BackendProfiles(
         "lmstudio",
         {
             "lmstudio": BackendProfile("lmstudio", settings or LocalSettings()),
@@ -54,3 +64,9 @@ def default_profiles(settings=None):
             ),
         },
     )
+    for name, provider in PROVIDERS.items():
+        if provider.protocol != "local":
+            result.profiles[name] = BackendProfile(
+                name, CloudSettings(provider=name, base_url=provider.endpoints[0])
+            )
+    return result

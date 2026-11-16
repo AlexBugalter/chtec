@@ -7,7 +7,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 
 from chtec.domain import AppError, Page
 
@@ -26,7 +26,7 @@ class LocalSettings:
     base_url: str = "http://127.0.0.1:1234/v1"
     ocr_model: str = ""
     edit_model: str = ""
-    api_key: str = ""
+    api_key: str = field(default="", repr=False)
     timeout: float = 180
     max_tokens: int = 4096
     enable_thinking: bool | None = None

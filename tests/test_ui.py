@@ -16,7 +16,8 @@ from chtec.ui.dialogs import ProposalDialog, SettingsDialog
 from chtec.ui.window import MainWindow
 
 
-def test_backend_switch_releases_previous_and_keeps_settings_isolated(app, tmp_path):
+def test_backend_switch_releases_previous_and_keeps_settings_isolated(app, tmp_path, monkeypatch):
+    from chtec.backends.catalog import ModelEntry
     from chtec.backends.profiles import default_profiles
     from chtec.config import SettingsStore
 
@@ -31,10 +32,19 @@ def test_backend_switch_releases_previous_and_keeps_settings_isolated(app, tmp_p
             self.released += 1
 
         def activate(self, profile, cancel, progress):
+            self.deactivate()
             progress("ready")
             return replace(profile.settings, ocr_model="u-loaded", api_key="u-private")
 
     manager = Manager()
+    monkeypatch.setattr(
+        "chtec.ui.window.catalog",
+        lambda p, **kwargs: (
+            [ModelEntry("local.gguf", "Local", "local.gguf", True)]
+            if p.name == "unsloth"
+            else [ModelEntry("lm", "LM", vision=True)]
+        ),
+    )
     store = SettingsStore(tmp_path / "config.json")
     window = MainWindow(default_registry(), profiles.active.settings, store, profiles, manager)
     window.runtime_settings = profiles.active.settings
@@ -43,9 +53,7 @@ def test_backend_switch_releases_previous_and_keeps_settings_isolated(app, tmp_p
     wait_until_idle(app, window)
     assert manager.released == 1
     assert window.settings.api_key == ""
-    assert window.runtime_settings is None
-    window.activate_backend()
-    wait_until_idle(app, window)
+    assert window.runtime_settings is not None
     assert window.model_settings.api_key == "u-private"
     assert window.model_settings.base_url.endswith(":8890/v1")
     assert window.settings.api_key == ""
@@ -59,6 +67,7 @@ def test_backend_switch_releases_previous_and_keeps_settings_isolated(app, tmp_p
 
 def test_changed_unsloth_file_updates_displayed_model_name(app):
     from chtec.backends.profiles import default_profiles
+
     profile = default_profiles().profiles["unsloth"]
     profile.settings = replace(profile.settings, ocr_model="old")
     dialog = SettingsDialog(profile.settings, profile=profile)
