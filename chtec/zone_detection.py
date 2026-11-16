@@ -8,7 +8,7 @@ from pathlib import Path
 from PIL import Image
 
 from chtec.domain import AppError
-from chtec.layout import TextBlock
+from chtec.layout import TextBlock, validate_blocks
 
 
 def check_cancel(cancel):
@@ -48,7 +48,7 @@ def split_on_rules(blocks, rules):
         if abs(block.angle) < 15:
             for rx0, ry0, rx1, ry1 in rules:
                 if min(ry0, ry1) <= (y0 + y1) / 2 <= max(ry0, ry1):
-                    x = (rx0 + rx1) / 2
+                    x = float((rx0 + rx1) / 2)
                     if x0 + 0.008 < x < x1 - 0.008:
                         cuts.append(x)
         edges = [x0, *sorted(set(cuts)), x1]
@@ -179,4 +179,4 @@ class TextZoneDetector:
             raise AppError("Найдено слишком много зон. Выберите меньший участок.")
         if progress:
             progress(3, 3, f"Найдено зон: {len(result)}")
-        return result
+        return validate_blocks(result)

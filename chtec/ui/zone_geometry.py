@@ -40,8 +40,9 @@ class CanvasGeometryMixin:
         pen = QPen(QColor("#257356"))
         pen.setCosmetic(True)
         painter.setPen(pen)
-        painter.setBrush(QColor("white"))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawRect(QRectF(points["nw"], points["se"]))
+        painter.setBrush(QColor("white"))
         for point in points.values():
             painter.drawRect(QRectF(point.x() - size / 2, point.y() - size / 2, size, size))
 

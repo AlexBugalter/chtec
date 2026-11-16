@@ -200,3 +200,20 @@ def test_tiny_edge_zone_resize_stays_valid(app, side, rect, handle):
     pane.digital.block_items["a"].block.validated()
     QTest.mouseRelease(canvas.viewport(), Qt.MouseButton.LeftButton, pos=end)
     p.blocks[0].validated()
+
+
+def test_edit_handles_do_not_paint_over_source_photo(app):
+    from PySide6.QtGui import QColor
+
+    from tests.test_layout_ui import coloured_page
+
+    pane = LayoutPane()
+    pane.resize(1100, 750)
+    pane.set_page(coloured_page())
+    pane.show()
+    pane.set_edit_mode(True)
+    pane.select_ids(["a"])
+    app.processEvents()
+    center = pane.source.mapFromScene(QPointF(160, 150))
+    pixel = pane.source.viewport().grab().toImage().pixelColor(center)
+    assert pixel != QColor("white")

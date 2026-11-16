@@ -132,3 +132,21 @@ def test_detector_handles_current_opencv_flat_hough_shape(monkeypatch):
     monkeypatch.setattr(rapidocr, "RapidOCR", lambda **kwargs: lambda *args, **kw: Output())
     monkeypatch.setattr(cv2, "HoughLinesP", lambda *args, **kw: np.array([[400, 0, 400, 900]]))
     assert TextZoneDetector().detect(page()) == []
+
+
+def test_detector_table_cuts_are_valid_domain_python_numbers(monkeypatch):
+    import cv2
+    import numpy as np
+    import rapidocr
+
+    from chtec.zone_detection import TextZoneDetector
+
+    class Output:
+        boxes = np.array([[[100, 200], [700, 200], [700, 240], [100, 240]]], dtype=np.float32)
+
+    monkeypatch.setattr(rapidocr, "RapidOCR", lambda **kwargs: lambda *args, **kw: Output())
+    monkeypatch.setattr(cv2, "HoughLinesP", lambda *args, **kw: np.array([[400, 0, 400, 900]]))
+    blocks = TextZoneDetector().detect(page())
+    assert blocks
+    for block in blocks:
+        block.validated()
