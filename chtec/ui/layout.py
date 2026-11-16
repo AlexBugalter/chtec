@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from chtec.domain_errors import AppError
 from chtec.layout import TextBlock
 from chtec.spatial import fitted_text, image_size
 from chtec.ui.widgets import RevisionEditor
@@ -89,6 +90,7 @@ class LayoutCanvas(QGraphicsView):
         self.area_item = None
         self.zoom = 1.0
         self.pan_anchor = None
+        self._source_pixmap = QPixmap()
         self.setDragMode(self.DragMode.ScrollHandDrag)
         self.setTransformationAnchor(self.ViewportAnchor.AnchorUnderMouse)
         # Stable viewport dimensions avoid fit/scrollbar resize oscillation.
@@ -103,6 +105,21 @@ class LayoutCanvas(QGraphicsView):
             self.fitInView(self.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
 
     def set_page(self, page):
+        # Decode before replacing the visible page: failure must not erase its photo.
+        pixmap = QPixmap()
+        page_size = (1, 1)
+        if page is not None:
+            if self.digital:
+                page_size = image_size(page)
+            else:
+                if not pixmap.loadFromData(page.image_png, "PNG") or pixmap.isNull():
+                    raise AppError("Не удалось загрузить изображение страницы для просмотра.")
+                page_size = (pixmap.width(), pixmap.height())
+        self._source_pixmap = pixmap
+        self.page_size = page_size
+        self.pan_anchor = None
+        self.draw_area = False
+        self.setDragMode(self.DragMode.ScrollHandDrag)
         self.scene().blockSignals(True)
         self.scene().clear()
         self.block_items = {}
@@ -112,15 +129,11 @@ class LayoutCanvas(QGraphicsView):
         if page is None:
             self.scene().setSceneRect(0, 0, 1, 1)
             self.scene().blockSignals(False)
+            self.viewport().update()
             return
-        self.page_size = image_size(page)
         w, h = self.page_size
         self.scene().setSceneRect(0, 0, w, h)
-        if not self.digital:
-            pixmap = QPixmap()
-            pixmap.loadFromData(page.image_png)
-            self.scene().addPixmap(pixmap)
-        else:
+        if self.digital:
             self.scene().addRect(
                 0, 0, w, h, QPen(Qt.GlobalColor.white), QBrush(Qt.GlobalColor.white)
             )
@@ -139,6 +152,14 @@ class LayoutCanvas(QGraphicsView):
         self.scene().blockSignals(False)
         self.fitInView(self.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
         self.zoom = 1.0
+        self.viewport().update()
+
+    def drawBackground(self, painter, rect):
+        super().drawBackground(painter, rect)
+        # The photo is a persistent background, independent of selectable scene items
+        # and their indexing/lifetime during zone selection and overlay rebuilding.
+        if not self.digital and not self._source_pixmap.isNull():
+            painter.drawPixmap(QPointF(0, 0), self._source_pixmap)
 
     def selection_changed(self):
         ids = [i.block_id for i in self.scene().selectedItems() if isinstance(i, BlockItem)]
@@ -327,11 +348,12 @@ class LayoutPane(QWidget):
         self.note.setText("Обведите участок на фотографии слева.")
 
     def set_page(self, page):
+        # Bind the new page only after its photo can actually be displayed.
+        self.source.set_page(page)
+        self.digital.set_page(page)
         self.page = page
         self.area = None
         self.selected_ids = []
-        self.source.set_page(page)
-        self.digital.set_page(page)
         if page and page.unplaced_text:
             self.note.setText(
                 "Остался текст без координат. Выделите его во вкладке «Текст и фрагменты» "

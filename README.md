@@ -8,7 +8,7 @@
 ![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)
 ![UI](https://img.shields.io/badge/UI-PySide6-315E49)
 ![Models](https://img.shields.io/badge/LLM-local_only-315E49)
-![Version](https://img.shields.io/badge/version-0.5.0-617368)
+![Version](https://img.shields.io/badge/version-0.5.1-617368)
 
 [Возможности](#возможности) · [Установка](#установка) · [Первый документ](#первый-документ) · [Архитектура](docs/ARCHITECTURE.md)
 

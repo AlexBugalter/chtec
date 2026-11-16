@@ -9,6 +9,140 @@ from chtec.ui.layout import LayoutPane
 from tests.test_layout import page
 
 
+def coloured_page():
+    import io
+
+    from PIL import Image
+
+    from chtec.domain import Page
+
+    data = io.BytesIO()
+    Image.new("RGB", (800, 1000), "#365a7c").save(data, "PNG")
+    result = Page(data.getvalue(), "synthetic.png", 1)
+    result.replace_blocks(
+        [TextBlock("a", "A", (0.1, 0.1, 0.3, 0.2)), TextBlock("b", "B", (0.6, 0.6, 0.8, 0.7))]
+    )
+    return result
+
+
+def source_colour(canvas):
+    from PySide6.QtCore import QPointF
+
+    point = canvas.mapFromScene(QPointF(400, 400))
+    return canvas.viewport().grab().toImage().pixelColor(point)
+
+
+def test_photo_survives_overlay_scene_rebuild(app):
+    from PySide6.QtGui import QColor
+
+    pane = LayoutPane()
+    pane.resize(1000, 700)
+    pane.set_page(coloured_page())
+    pane.show()
+    app.processEvents()
+    assert source_colour(pane.source) == QColor("#365a7c")
+    # Fault injection: losing scene items must not destroy the original photo layer.
+    pane.source.scene().clear()
+    app.processEvents()
+    assert source_colour(pane.source) == QColor("#365a7c")
+
+
+def test_repeated_zone_selection_keeps_rendered_photo(app):
+    from PySide6.QtGui import QColor
+
+    pane = LayoutPane()
+    pane.resize(1000, 700)
+    pane.set_page(coloured_page())
+    pane.show()
+    app.processEvents()
+    for i in range(60):
+        pane.select_ids(["a" if i % 2 else "b"])
+        app.processEvents()
+        assert source_colour(pane.source) == QColor("#365a7c")
+    pane.set_page(None)
+    app.processEvents()
+    assert pane.source.scene().items() == []
+
+
+def test_zone_selection_zoom_and_pan_keep_photo_background(app):
+    from PySide6.QtCore import QPointF
+    from PySide6.QtGui import QColor
+
+    pane = LayoutPane()
+    pane.resize(1000, 700)
+    pane.set_page(coloured_page())
+    pane.show()
+    app.processEvents()
+    expected = QColor("#365a7c")
+    for scale in (1.2, 2, 0.5):
+        pane.source.scale(scale, scale)
+        pane.source.zoom *= scale
+        for identifier in ("a", "b", "a", "b"):
+            pane.select_ids([identifier])
+            app.processEvents()
+            image = pane.source.viewport().grab().toImage()
+            assert any(
+                image.pixelColor(x, y) == expected
+                for x in range(10, image.width() - 10, 30)
+                for y in range(10, image.height() - 10, 30)
+            )
+    pane.source.centerOn(QPointF(700, 850))
+    app.processEvents()
+    pane.set_page(None)
+    app.processEvents()
+    image = pane.source.viewport().grab().toImage()
+    assert image.pixelColor(image.width() // 2, image.height() // 2) != expected
+
+
+def test_failed_photo_decode_preserves_current_display(app):
+    from dataclasses import replace
+
+    from PySide6.QtGui import QColor
+
+    from chtec.domain import AppError
+
+    pane = LayoutPane()
+    p = coloured_page()
+    pane.resize(1000, 700)
+    pane.set_page(p)
+    pane.show()
+    app.processEvents()
+    with pytest.raises(AppError, match="изображен"):
+        pane.source.set_page(replace(p, image_png=b"invalid PNG"))
+    app.processEvents()
+    assert source_colour(pane.source) == QColor("#365a7c")
+
+
+def test_reloading_page_leaves_area_mode_and_restores_panning(app):
+    from PySide6.QtWidgets import QGraphicsView
+
+    pane = LayoutPane()
+    p = coloured_page()
+    pane.set_page(p)
+    pane.begin_area()
+    pane.set_page(p)
+    assert not pane.source.draw_area
+    assert pane.source.dragMode() == QGraphicsView.DragMode.ScrollHandDrag
+
+
+def test_rejected_page_does_not_change_pane_binding_or_selection(app):
+    from dataclasses import replace
+
+    from chtec.domain import AppError
+
+    pane = LayoutPane()
+    original = coloured_page()
+    pane.set_page(original)
+    pane.select_ids(["b"])
+    area = (0.1, 0.1, 0.3, 0.3)
+    pane.set_area(area)
+    with pytest.raises(AppError):
+        pane.set_page(replace(original, image_png=b"invalid PNG"))
+    assert pane.page is original
+    assert pane.selected_ids == ["b"]
+    assert pane.area == area
+
+
 @pytest.fixture
 def app():
     app = QApplication.instance() or QApplication([])
