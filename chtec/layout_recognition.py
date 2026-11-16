@@ -1,19 +1,82 @@
 import io
+import json
 from dataclasses import replace
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
-from chtec.domain import Page
+from chtec.domain import AppError, Page
 from chtec.layout import parse_layout
 from chtec.regions import ImageRegion, RegionExtractor
+from chtec.zone_detection import check_cancel
 
 
 class LayoutRecognitionService:
-    def __init__(self, model):
+    def __init__(self, model, detector=None):
         self.model = model
+        self.detector = detector
 
-    def recognize(self, page):
-        return [replace(block, verified=False) for block in parse_layout(self.model.layout(page))]
+    def recognize(self, page, cancel=None, progress=None):
+        check_cancel(cancel)
+        if self.detector is None:
+            return [
+                replace(block, verified=False) for block in parse_layout(self.model.layout(page))
+            ]
+        zones = page.blocks or self.detector.detect(page, cancel=cancel, progress=progress)
+        result = []
+        for start in range(0, len(zones), 6):
+            check_cancel(cancel)
+            batch = zones[start : start + 6]
+            if progress:
+                progress(start, len(zones), f"Чтение зон {start + 1}–{start + len(batch)}")
+            sheet = self.contact_sheet(page, batch)
+            ids = [block.id for block in batch]
+            answer = self.model.read_regions(sheet, ids)
+            check_cancel(cancel)
+            try:
+                payload = json.loads(
+                    answer.strip().removeprefix("```json").removesuffix("```").strip()
+                )
+                regions = payload["regions"]
+                if not isinstance(regions, list) or len(regions) != len(ids):
+                    raise ValueError("count")
+                texts = {}
+                for region in regions:
+                    identifier, text = region["id"], region["text"]
+                    if identifier not in ids or identifier in texts or not isinstance(text, str):
+                        raise ValueError("id/text")
+                    texts[identifier] = text
+                if set(texts) != set(ids):
+                    raise ValueError("missing")
+            except (ValueError, KeyError, TypeError) as exc:
+                raise AppError(
+                    "Модель вернула неверные ID зон. Предыдущий результат сохранён."
+                ) from exc
+            result.extend(replace(block, text=texts[block.id], verified=False) for block in batch)
+        return result
+
+    @staticmethod
+    def contact_sheet(page, blocks):
+        crops = []
+        for block in blocks:
+            data = RegionExtractor().extract(page, ImageRegion(*block.rect)).image_png
+            with Image.open(io.BytesIO(data)) as source:
+                crop = source.convert("RGB").rotate(block.angle, expand=True, fillcolor="white")
+                crop.thumbnail((1800, 800))
+                crops.append((block.id, crop))
+        width = max(crop.width for _, crop in crops) + 24
+        height = sum(crop.height + 40 for _, crop in crops)
+        sheet = Image.new("RGB", (width, height), "white")
+        draw = ImageDraw.Draw(sheet)
+        y = 0
+        for identifier, crop in crops:
+            draw.text((12, y + 4), identifier, fill="black", font_size=22)
+            sheet.paste(crop, (12, y + 32))
+            y += crop.height + 40
+            draw.line((0, y - 2, width, y - 2), fill="#888888", width=2)
+        sheet.thumbnail((2400, 2400))
+        output = io.BytesIO()
+        sheet.save(output, "PNG")
+        return output.getvalue()
 
     def refine(self, page, block):
         image = RegionExtractor().extract(page, ImageRegion(*block.rect))

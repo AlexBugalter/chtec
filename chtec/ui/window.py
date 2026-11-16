@@ -36,6 +36,7 @@ from chtec.ui.layout import LayoutPane, LayoutProposalDialog
 from chtec.ui.style import STYLE
 from chtec.ui.widgets import ImagePreview, RevisionEditor
 from chtec.ui.workers import Worker
+from chtec.zone_detection import TextZoneDetector
 
 
 class MainWindow(QMainWindow):
@@ -255,8 +256,10 @@ class MainWindow(QMainWindow):
         self.view_tabs.addTab(self.layout_pane, "Как в оригинале")
         spatial_row = QHBoxLayout()
         self.layout_button = self.button("Распознать с расположением", self.recognize_layout)
+        self.detect_zones_button = self.button("Найти зоны локально", self.detect_zones)
         self.bind_button = self.button("Привязать выделенный текст к участку", self.bind_text)
         spatial_row.addWidget(self.layout_button)
+        spatial_row.addWidget(self.detect_zones_button)
         spatial_row.addWidget(self.bind_button)
         root.addLayout(spatial_row)
         root.addWidget(self.view_tabs, 1)
@@ -291,6 +294,7 @@ class MainWindow(QMainWindow):
     def refresh_controls(self):
         busy = self.worker is not None
         self.layout_button.setEnabled(not busy and self.current_page is not None)
+        self.detect_zones_button.setEnabled(not busy and self.current_page is not None)
         self.bind_button.setEnabled(not busy and self.current_page is not None)
         self.layout_pane.set_busy(busy)
         if self.profiles is not None:
@@ -413,8 +417,10 @@ class MainWindow(QMainWindow):
 
     def layout_changed(self):
         ids = list(self.layout_pane.selected_ids)
+        state = self.layout_pane.view_state()
         self.dirty = True
         self.select_page(self.page_list.currentRow())
+        self.layout_pane.restore_view_state(state)
         self.layout_pane.select_ids(ids)
 
     def edit_selected_block(self):
@@ -524,13 +530,49 @@ class MainWindow(QMainWindow):
             else "Блок привязан к оригиналу."
         )
 
+    def detect_zones(self):
+        if self.worker or not self.current_page:
+            return
+        page = self.current_page
+        snapshot = copy.deepcopy(page)
+
+        def proposed(blocks):
+            if self.close_after_task or self.worker.cancel.is_set():
+                return
+            if page.text != snapshot.text or page.blocks != snapshot.blocks:
+                self.show_error("Страница изменилась. Повторите поиск зон.")
+                return
+            dialog = LayoutProposalDialog(snapshot, blocks, self)
+            dialog.draft.replace_blocks(blocks, unplaced_text=snapshot.text)
+            dialog.pane.set_page(dialog.draft)
+            dialog.pane.note.setText(
+                "Локальный поиск границ без чтения. Прежний текст сохранится без привязки."
+            )
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                page.replace_blocks(
+                    dialog.draft.blocks,
+                    "Локальный поиск зон",
+                    unplaced_text=dialog.draft.unplaced_text,
+                )
+                self.layout_changed()
+                self.view_tabs.setCurrentIndex(1)
+
+        self.run_task(
+            lambda job: TextZoneDetector().detect(
+                snapshot, job.cancel, lambda n, total, text: job.progress.emit(n, text)
+            ),
+            proposed,
+            lambda n, text: self.statusBar().showMessage(text),
+            cancellable=True,
+        )
+
     def recognize_layout(self):
         if self.worker or not self.current_page:
             return
         page = self.current_page
         snapshot = copy.deepcopy(page)
         try:
-            service = LayoutRecognitionService(self.language_model())
+            service = LayoutRecognitionService(self.language_model(), detector=TextZoneDetector())
         except AppError as exc:
             self.show_error(str(exc))
             return
@@ -551,8 +593,15 @@ class MainWindow(QMainWindow):
                 self.layout_changed()
                 self.view_tabs.setCurrentIndex(1)
 
-        self.statusBar().showMessage("Модель предлагает текст и геометрию; потребуется проверка…")
-        self.run_task(lambda _: service.recognize(snapshot), proposed, cancellable=True)
+        self.statusBar().showMessage("Локальные границы и чтение фрагментов; потребуется проверка…")
+        self.run_task(
+            lambda job: service.recognize(
+                snapshot, job.cancel, lambda n, total, text: job.progress.emit(n, text)
+            ),
+            proposed,
+            lambda n, text: self.statusBar().showMessage(text),
+            cancellable=True,
+        )
 
     def refine_block(self, block_id):
         if self.worker or not self.current_page:

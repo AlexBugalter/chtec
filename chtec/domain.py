@@ -63,6 +63,32 @@ class Page:
             reason,
         )
 
+    def update_block_geometry(self, block_id, rect, angle=None):
+        if block_id not in {b.id for b in self.blocks}:
+            raise AppError("Текстовый блок отсутствует.")
+        blocks = [
+            replace(b, rect=tuple(rect), angle=b.angle if angle is None else angle, verified=True)
+            if b.id == block_id
+            else b
+            for b in self.blocks
+        ]
+        self.replace_blocks(blocks, "Изменение границ зоны")
+
+    def delete_blocks(self, ids, keep_text=False):
+        selected = set(ids)
+        if not selected or not selected <= {b.id for b in self.blocks}:
+            raise AppError("Выберите существующие зоны.")
+        unplaced = self.unplaced_text
+        if keep_text:
+            unplaced = "\n\n".join(
+                t for t in [unplaced, *[b.text for b in self.blocks if b.id in selected]] if t
+            )
+        self.replace_blocks(
+            [b for b in self.blocks if b.id not in selected],
+            "Снятие привязки" if keep_text else "Удаление зон",
+            unplaced_text=unplaced,
+        )
+
     def replace_text(self, text: str, reason: str = "Изменение") -> None:
         if text != self.text:
             if self.blocks:
