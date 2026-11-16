@@ -46,7 +46,7 @@ def is_chat_candidate(identifier, architecture=""):
     return not re.search(
         r"(?:^|[/_ .-])(?:asr|tts|vocoder|vae|mmproj|"
         r"qwen-image|wan\d*|ltxv?|latent[-_]upsampler|connectors)"
-        r"(?:$|[/_ .-]|\d)",
+        r"(?:$|[/_ .@-]|\d)",
         name,
     )
 
@@ -79,7 +79,10 @@ def local_catalog(profile, roots=None, cancel=None):
                 )
                 for row in rows
                 if row.get("modelKey")
-                and is_chat_candidate(row["modelKey"], row.get("architecture", ""))
+                and is_chat_candidate(
+                    " ".join(str(row.get(key, "")) for key in ("modelKey", "displayName", "path")),
+                    row.get("architecture", ""),
+                )
             ]
             return sorted(entries, key=lambda e: e.id.lower())
         except (OSError, subprocess.TimeoutExpired, ValueError, TypeError, AttributeError):

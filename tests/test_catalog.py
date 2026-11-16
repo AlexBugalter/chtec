@@ -53,6 +53,8 @@ def test_installed_catalog_excludes_audio_and_image_generation(tmp_path, monkeyp
     ] == ["vision-chat.gguf"]
     rows = [
         {"modelKey": "qwen3-asr", "vision": True},
+        {"modelKey": "snapshot-hash", "displayName": "Qwen3 ASR 0.6B", "vision": True},
+        {"modelKey": "owner/vae@?", "displayName": "Vae"},
         {"modelKey": "wan", "architecture": "wan"},
         {"modelKey": "vision-chat", "vision": True},
     ]
