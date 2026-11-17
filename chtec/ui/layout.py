@@ -132,7 +132,7 @@ class LayoutCanvas(CanvasGeometryMixin, QGraphicsView):
         self.page_size = (1, 1)
         self.draw_area = False
         self.anchor = None
-        self.area_item = None
+        self._area_rect = None
         self.zoom = 1.0
         self.pan_anchor = None
         self._source_pixmap = QPixmap()
@@ -169,9 +169,11 @@ class LayoutCanvas(CanvasGeometryMixin, QGraphicsView):
         self._geometry_gesture = None
         self.setDragMode(self.DragMode.NoDrag if self.edit_mode else self.DragMode.ScrollHandDrag)
         self.scene().blockSignals(True)
+        # The transient selection is geometry, never a scene-owned C++ item.
+        # Dropping it cannot race native scene deletion during page rebuilding.
+        self._area_rect = None
         self.scene().clear()
         self.block_items = {}
-        self.area_item = None
         self.anchor = None
         self.selected_ids = []
         if page is None:
@@ -241,6 +243,12 @@ class LayoutCanvas(CanvasGeometryMixin, QGraphicsView):
 
     def drawForeground(self, painter, rect):
         super().drawForeground(painter, rect)
+        if self._area_rect is not None:
+            pen = QPen(QColor("#257356"))
+            pen.setCosmetic(True)
+            painter.setPen(pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRect(self._area_rect)
         self.draw_geometry_handles(painter)
 
     def keyPressEvent(self, event):
@@ -263,11 +271,9 @@ class LayoutCanvas(CanvasGeometryMixin, QGraphicsView):
     def mousePressEvent(self, event):
         if self.draw_area and event.button() == Qt.MouseButton.LeftButton:
             self.anchor = self.mapToScene(event.position().toPoint())
-            if self.area_item:
-                self.scene().removeItem(self.area_item)
-            self.area_item = self.scene().addRect(
-                QRectF(self.anchor, self.anchor), QPen(QColor("#257356"))
-            )
+            self._area_rect = QRectF(self.anchor, self.anchor)
+            self.viewport().update()
+            event.accept()
             return
         if self.geometry_press(event):
             return
@@ -294,7 +300,9 @@ class LayoutCanvas(CanvasGeometryMixin, QGraphicsView):
             return
         if self.anchor is not None:
             rect = QRectF(self.anchor, self.mapToScene(event.position().toPoint())).normalized()
-            self.area_item.setRect(rect.intersected(self.sceneRect()))
+            self._area_rect = rect.intersected(self.sceneRect())
+            self.viewport().update()
+            event.accept()
             return
         super().mouseMoveEvent(event)
 
@@ -305,7 +313,7 @@ class LayoutCanvas(CanvasGeometryMixin, QGraphicsView):
             self.pan_anchor = None
             return
         if self.anchor is not None:
-            rect = self.area_item.rect()
+            rect = QRectF(self._area_rect)
             self.anchor = None
             self.draw_area = False
             self.setDragMode(
