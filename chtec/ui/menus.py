@@ -55,6 +55,7 @@ def build_menus(w):
     action(file, "exit", "Выход", w.close, "Alt+F4")
     edit = menu("edit", "Правка")
     action(edit, "undo", "Отменить правку", w.undo_text, "Ctrl+Z", button=w.undo_button)
+    action(edit, "redo", "Повторить правку", w.redo_text, "Ctrl+Shift+Z")
     action(edit, "copy", "Копировать", w.editor.copy)
     action(edit, "edit_zone", "Редактировать", w.edit_selected_block)
     action(edit, "delete_zone", "Удалить зоны", w.layout_pane.delete_selected)
@@ -216,6 +217,7 @@ def sync_actions(w):
         w.actions[key].setEnabled(button.isEnabled())
     busy = w.worker is not None
     page = w.current_page
+    w.actions["redo"].setEnabled(not busy and bool(page and getattr(page, "_future", [])))
     for key in ("save_template", "open_template", "edit_zone", "delete_zone"):
         w.actions[key].setEnabled(not busy and page is not None)
     w.actions["save_template"].setEnabled(not busy and bool(page and page.blocks))

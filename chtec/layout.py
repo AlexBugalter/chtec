@@ -2,7 +2,7 @@
 
 import json
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from chtec.domain_errors import AppError
 
@@ -14,6 +14,7 @@ class TextBlock:
     rect: tuple[float, float, float, float]
     angle: float = 0
     verified: bool = False
+    quad: tuple[tuple[float, float], ...] | None = None
 
     def validated(self):
         try:
@@ -36,11 +37,41 @@ class TextBlock:
                 raise ValueError
             if type(self.verified) is not bool:
                 raise ValueError
-            return TextBlock(self.id, self.text, tuple(self.rect), self.angle, self.verified)
-        except (ValueError, TypeError) as exc:
+            quad = None
+            if self.quad is not None:
+                if len(self.quad) != 4 or any(
+                    len(p) != 2
+                    or any(
+                        type(v) not in (int, float) or not math.isfinite(v) or not 0 <= v <= 1
+                        for v in p
+                    )
+                    for p in self.quad
+                ):
+                    raise ValueError
+                quad = tuple(tuple(p) for p in self.quad)
+                crosses = []
+                for i in range(4):
+                    a, b, c = quad[i], quad[(i + 1) % 4], quad[(i + 2) % 4]
+                    crosses.append((b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0]))
+                if not (all(v > 1e-12 for v in crosses) or all(v < -1e-12 for v in crosses)):
+                    raise ValueError
+                bounds = quad_bounds(quad)
+                if any(abs(a - b) > 1e-9 for a, b in zip(bounds, self.rect)):
+                    raise ValueError
+            return TextBlock(self.id, self.text, tuple(self.rect), self.angle, self.verified, quad)
+        except (ValueError, TypeError, IndexError) as exc:
             raise AppError("Некорректный текстовый блок: ID, координаты или угол.") from exc
 
     def geometry(self, width, height):
+        if self.quad is not None:
+            points = self.corners(width, height)
+            edges = [math.dist(points[i], points[(i + 1) % 4]) for i in range(4)]
+            return (
+                sum(p[0] for p in points) / 4,
+                sum(p[1] for p in points) / 4,
+                (edges[0] + edges[2]) / 2,
+                (edges[1] + edges[3]) / 2,
+            )
         x0, y0, x1, y1 = self.rect
         w, h = (x1 - x0) * width, (y1 - y0) * height
         c, s = abs(math.cos(math.radians(self.angle))), abs(math.sin(math.radians(self.angle)))
@@ -55,12 +86,31 @@ class TextBlock:
         return (x0 + x1) * width / 2, (y0 + y1) * height / 2, local_w * scale, local_h * scale
 
     def corners(self, width, height):
+        if self.quad is not None:
+            return [(x * width, y * height) for x, y in self.quad]
         cx, cy, w, h = self.geometry(width, height)
         c, s = math.cos(math.radians(self.angle)), math.sin(math.radians(self.angle))
         return [
             (cx + x * c - y * s, cy + x * s + y * c)
             for x, y in ((-w / 2, -h / 2), (w / 2, -h / 2), (w / 2, h / 2), (-w / 2, h / 2))
         ]
+
+    def with_quad(self, points):
+        return replace(
+            self, rect=quad_bounds(points), quad=tuple(tuple(p) for p in points), angle=0
+        ).validated()
+
+
+def quad_bounds(points):
+    try:
+        return (
+            min(p[0] for p in points),
+            min(p[1] for p in points),
+            max(p[0] for p in points),
+            max(p[1] for p in points),
+        )
+    except (TypeError, ValueError, IndexError) as exc:
+        raise AppError("Некорректные углы зоны.") from exc
 
 
 def validate_blocks(blocks):

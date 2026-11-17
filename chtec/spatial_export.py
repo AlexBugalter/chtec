@@ -1,3 +1,4 @@
+import base64
 import html
 import tempfile
 from pathlib import Path
@@ -12,6 +13,18 @@ def page_svg(page):
     width, height = image_size(page)
     elements = []
     for block in page.blocks:
+        if block.quad is not None:
+            from chtec.quad_render import quad_text_png
+
+            data, (x0, y0, x1, y1) = quad_text_png(block, width, height)
+            encoded = base64.b64encode(data).decode("ascii")
+            elements.append(
+                f'<image data-block="{html.escape(block.id, quote=True)}" '
+                f'x="{x0}" y="{y0}" width="{x1 - x0}" height="{y1 - y0}" '
+                f'href="data:image/png;base64,{encoded}"><title>'
+                f"{html.escape(block.text)}</title></image>"
+            )
+            continue
         cx, cy, w, h = block.geometry(width, height)
         lines, size = fitted_text(block.text, w, h)
         spans = "".join(
@@ -55,6 +68,17 @@ def write_spatial_pdf(document, path):
             page = result.new_page(width=width * scale, height=height * scale)
             page.insert_font(fontname="spatial", fontbuffer=font.buffer)
             for block in source.blocks:
+                if block.quad is not None:
+                    from chtec.quad_render import insert_quad_text_layer, quad_text_png
+
+                    data, bounds = quad_text_png(block, width, height)
+                    page.insert_image(
+                        pymupdf.Rect(*(v * scale for v in bounds)),
+                        stream=data,
+                        keep_proportion=False,
+                    )
+                    insert_quad_text_layer(page, block, width, height, scale)
+                    continue
                 cx, cy, w, h = block.geometry(width, height)
                 lines, size = fitted_text(block.text, w, h)
                 centre = pymupdf.Point(cx * scale, cy * scale)

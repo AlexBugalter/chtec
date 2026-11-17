@@ -4,7 +4,7 @@ from dataclasses import replace
 from uuid import uuid4
 
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QBrush, QColor, QFont, QPen, QPixmap, QPolygonF
+from PySide6.QtGui import QBrush, QColor, QFont, QPen, QPixmap, QPolygonF, QTransform
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
+    QGraphicsItemGroup,
     QGraphicsPolygonItem,
     QGraphicsScene,
     QGraphicsSimpleTextItem,
@@ -54,27 +55,31 @@ class BlockItem(QGraphicsPolygonItem):
         self.setPos(cx, cy)
         self.setRotation(block.angle)
         self.setFlag(self.GraphicsItemFlag.ItemIsSelectable)
+        self.setFlag(self.GraphicsItemFlag.ItemClipsChildrenToShape)
         self.setToolTip(
             (tr("Проверено") if block.verified else tr("Привязка требует проверки"))
             + "\n"
             + block.text
         )
         if digital:
+            self.text_group = QGraphicsItemGroup(self)
+            self.text_size = (w, h)
             lines, size = fitted_text(block.text, w, h)
             font = QFont("Arial")
             font.setPointSizeF(size * 72 / 96)
             for i, line in enumerate(lines):
-                item = QGraphicsSimpleTextItem(line, self)
+                item = QGraphicsSimpleTextItem(line, self.text_group)
                 item.setFont(font)
-                item.setPos(-w / 2, -h / 2 + i * size * 1.2)
+                item.setPos(0, i * size * 1.2)
                 item.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
         self.highlight(False, digital)
+        self.set_geometry(block, width, height)
 
     def set_geometry(self, block, width, height):
         cx, cy, w, h = block.geometry(width, height)
         self.block = block
-        self.setPolygon(
-            QPolygonF(
+        if block.quad is None:
+            polygon = QPolygonF(
                 [
                     QPointF(-w / 2, -h / 2),
                     QPointF(w / 2, -h / 2),
@@ -82,13 +87,19 @@ class BlockItem(QGraphicsPolygonItem):
                     QPointF(-w / 2, h / 2),
                 ]
             )
-        )
-        self.setPos(cx, cy)
-        self.setRotation(block.angle)
-        for index, child in enumerate(self.childItems()):
-            if isinstance(child, QGraphicsSimpleTextItem):
-                size = child.font().pointSizeF() * 96 / 72
-                child.setPos(-w / 2, -h / 2 + index * size * 1.2)
+            self.setPos(cx, cy)
+            self.setRotation(block.angle)
+        else:
+            polygon = QPolygonF([QPointF(x, y) for x, y in block.corners(width, height)])
+            self.setPos(0, 0)
+            self.setRotation(0)
+        self.setPolygon(polygon)
+        if hasattr(self, "text_group"):
+            tw, th = self.text_size
+            local = QPolygonF([QPointF(0, 0), QPointF(tw, 0), QPointF(tw, th), QPointF(0, th)])
+            transform = QTransform()
+            if QTransform.quadToQuad(local, polygon, transform):
+                self.text_group.setTransform(transform)
 
     def highlight(self, selected, digital):
         pen = QPen(QColor("#257356" if selected else "#9aaba1"))
@@ -132,6 +143,8 @@ class LayoutCanvas(CanvasGeometryMixin, QGraphicsView):
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.scene().selectionChanged.connect(self.selection_changed)
         self.setMinimumSize(240, 200)
+        self.setMouseTracking(True)
+        self.viewport().setMouseTracking(True)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -338,6 +351,7 @@ class LayoutCanvas(CanvasGeometryMixin, QGraphicsView):
 class BlockDialog(QDialog):
     def __init__(self, block, parent=None):
         super().__init__(parent)
+        self.original_block = block
         self.setWindowTitle(tr("Редактировать текстовый блок"))
         self.resize(620, 420)
         layout = QVBoxLayout(self)
@@ -371,6 +385,12 @@ class BlockDialog(QDialog):
             spin.setValue(value * 100)
             self.coordinates[key] = spin
             form.addRow(title, spin)
+            if block.quad is not None:
+                spin.setEnabled(False)
+                spin.setToolTip(tr("Изменяйте форму зоны круглыми маркерами на странице."))
+        if block.quad is not None:
+            self.angle.setEnabled(False)
+            self.angle.setToolTip(tr("Изменяйте форму зоны круглыми маркерами на странице."))
         layout.addLayout(form)
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
@@ -380,6 +400,8 @@ class BlockDialog(QDialog):
         layout.addWidget(buttons)
 
     def rect_value(self):
+        if self.original_block.quad is not None:
+            return self.original_block.rect
         return tuple(self.coordinates[k].value() / 100 for k in ("left", "top", "right", "bottom"))
 
     def save_properties(self):
@@ -588,7 +610,10 @@ class LayoutPane(QWidget):
     def commit_geometry(self, identifier, rect):
         if self.busy or self.page is None:
             return
-        self.page.update_block_geometry(identifier, rect)
+        if len(rect) == 4 and isinstance(rect[0], (tuple, list)):
+            self.page.update_block_quad(identifier, rect)
+        else:
+            self.page.update_block_geometry(identifier, rect)
         self.refresh_page([identifier])
         self.changed.emit()
 
@@ -702,7 +727,7 @@ class LayoutPane(QWidget):
         id = self.selected_ids[0]
         self.page.replace_blocks(
             [
-                replace(b, rect=tuple(self.area), verified=True) if b.id == id else b
+                replace(b, rect=tuple(self.area), quad=None, verified=True) if b.id == id else b
                 for b in self.page.blocks
             ],
             tr("Новая область блока"),
@@ -725,6 +750,7 @@ class LayoutPane(QWidget):
                         text=text,
                         angle=angle,
                         rect=tuple(rect),
+                        quad=b.quad if not geometry_changed else None,
                         verified=b.verified or geometry_changed,
                     )
                     if b.id == id

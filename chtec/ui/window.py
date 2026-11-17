@@ -223,6 +223,11 @@ class MainWindow(WorkspaceControls, QMainWindow):
         self.layout_pane.restore_view_state(state)
         self.layout_pane.select_ids(ids)
 
+    def redo_text(self):
+        if self.worker is None and self.current_page and self.current_page.redo():
+            self.dirty = True
+            self.select_page(self.page_list.currentRow())
+
     def edit_selected_block(self):
         if self.layout_pane.selected_ids:
             self.layout_pane.edit_block(self.layout_pane.selected_ids[0])

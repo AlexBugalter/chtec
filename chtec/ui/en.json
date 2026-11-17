@@ -352,5 +352,9 @@
   "{0} · подключение…": "{0} · connecting…",
   "{0} · введите API-ключ в настройках.": "{0} · enter an API key in settings.",
   "{0} · получение каталога…": "{0} · fetching catalog…",
-  "{0} · каталог обновлён; выберите модель.": "{0} · catalog refreshed; choose a model."
+  "{0} · каталог обновлён; выберите модель.": "{0} · catalog refreshed; choose a model.",
+  "Перетащите угол, чтобы изменить форму зоны.": "Drag a corner to change the zone shape.",
+  "Перетащите зону, чтобы переместить её.": "Drag the zone to move it.",
+  "Повторить правку": "Redo edit",
+  "Изменяйте форму зоны круглыми маркерами на странице.": "Change the zone shape using the round handles on the page."
 }

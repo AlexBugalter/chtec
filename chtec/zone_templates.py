@@ -36,7 +36,8 @@ class ZoneTemplate:
     def from_page(cls, page, name):
         width, height = image_size(page)
         zones = tuple(
-            TextBlock(f"zone-{i}", "", b.rect, b.angle) for i, b in enumerate(page.blocks, 1)
+            TextBlock(f"zone-{i}", "", b.rect, b.angle, quad=b.quad)
+            for i, b in enumerate(page.blocks, 1)
         )
         return cls(name.strip(), width / height, zones).validated()
 
@@ -47,7 +48,15 @@ class ZoneTemplate:
             "version": 1,
             "name": self.name,
             "aspect": self.aspect,
-            "zones": [{"id": b.id, "rect": list(b.rect), "angle": b.angle} for b in self.zones],
+            "zones": [
+                {
+                    "id": b.id,
+                    "rect": list(b.rect),
+                    "angle": b.angle,
+                    **({"quad": b.quad} if b.quad is not None else {}),
+                }
+                for b in self.zones
+            ],
         }
 
     def apply(self, page):
@@ -94,9 +103,13 @@ class ZoneTemplate:
                 raise ValueError
             zones = []
             for row in data["zones"]:
-                if set(row) != {"id", "rect", "angle"}:
+                if set(row) not in ({"id", "rect", "angle"}, {"id", "rect", "angle", "quad"}):
                     raise ValueError
-                zones.append(TextBlock(row["id"], "", tuple(row["rect"]), row["angle"]))
+                zones.append(
+                    TextBlock(
+                        row["id"], "", tuple(row["rect"]), row["angle"], quad=row.get("quad")
+                    ).validated()
+                )
             return cls(data["name"], data["aspect"], tuple(zones)).validated()
         except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
             raise AppError("Не удалось прочитать корректный шаблон зон версии1.") from exc

@@ -9,7 +9,7 @@ from threading import Event
 from typing import Callable
 
 import pymupdf
-from PIL import Image, ImageOps
+from PIL import Image, ImageDraw, ImageOps
 
 from chtec.domain import MAX_FILE_BYTES, MAX_IMAGE_SIDE, MAX_PIXELS, AppError, Page
 from chtec.formats.importers import normalize_image
@@ -53,6 +53,28 @@ class ReviewResult:
 
 
 class RegionExtractor:
+    def extract_block(self, page, block):
+        block.validated()
+        result = self.extract(page, ImageRegion(*block.rect))
+        if block.quad is None:
+            return result
+        with Image.open(io.BytesIO(result.image_png)) as source:
+            crop = source.convert("RGB")
+        x0, y0, x1, y1 = block.rect
+        mask = Image.new("L", crop.size, 0)
+        ImageDraw.Draw(mask).polygon(
+            [
+                ((x - x0) / (x1 - x0) * crop.width, (y - y0) / (y1 - y0) * crop.height)
+                for x, y in block.quad
+            ],
+            fill=255,
+        )
+        output = Image.new("RGB", crop.size, "white")
+        output.paste(crop, mask=mask)
+        buffer = io.BytesIO()
+        output.save(buffer, "PNG")
+        return RegionImage(buffer.getvalue(), result.used_original, result.source_label)
+
     @staticmethod
     def _crop(image: Image.Image, region: ImageRegion) -> bytes:
         box = (

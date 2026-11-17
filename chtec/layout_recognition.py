@@ -6,7 +6,7 @@ from PIL import Image, ImageDraw
 
 from chtec.domain import AppError, Page
 from chtec.layout import parse_layout
-from chtec.regions import ImageRegion, RegionExtractor
+from chtec.regions import RegionExtractor
 from chtec.zone_detection import check_cancel
 
 
@@ -58,7 +58,7 @@ class LayoutRecognitionService:
     def contact_sheet(page, blocks):
         crops = []
         for block in blocks:
-            data = RegionExtractor().extract(page, ImageRegion(*block.rect)).image_png
+            data = RegionExtractor().extract_block(page, block).image_png
             with Image.open(io.BytesIO(data)) as source:
                 crop = source.convert("RGB").rotate(block.angle, expand=True, fillcolor="white")
                 crop.thumbnail((1800, 800))
@@ -79,7 +79,7 @@ class LayoutRecognitionService:
         return output.getvalue()
 
     def refine(self, page, block):
-        image = RegionExtractor().extract(page, ImageRegion(*block.rect))
+        image = RegionExtractor().extract_block(page, block)
         data = image.image_png
         if block.angle:
             with Image.open(io.BytesIO(data)) as source:

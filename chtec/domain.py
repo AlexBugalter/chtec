@@ -32,6 +32,7 @@ class Page:
     unplaced_text: str = ""
 
     def snapshot(self, reason):
+        self._future = []
         self.history.append(
             Revision(self.text, reason, blocks=list(self.blocks), unplaced_text=self.unplaced_text)
         )
@@ -67,12 +68,27 @@ class Page:
         if block_id not in {b.id for b in self.blocks}:
             raise AppError("Текстовый блок отсутствует.")
         blocks = [
-            replace(b, rect=tuple(rect), angle=b.angle if angle is None else angle, verified=True)
+            replace(
+                b,
+                rect=tuple(rect),
+                angle=b.angle if angle is None else angle,
+                quad=b.quad if tuple(rect) == b.rect else None,
+                verified=True,
+            )
             if b.id == block_id
             else b
             for b in self.blocks
         ]
         self.replace_blocks(blocks, "Изменение границ зоны")
+
+    def update_block_quad(self, block_id, points):
+        if block_id not in {b.id for b in self.blocks}:
+            raise AppError("Текстовый блок отсутствует.")
+        blocks = [
+            replace(b.with_quad(points), verified=True) if b.id == block_id else b
+            for b in self.blocks
+        ]
+        self.replace_blocks(blocks, "Изменение формы зоны")
 
     def delete_blocks(self, ids, keep_text=False):
         selected = set(ids)
@@ -100,10 +116,30 @@ class Page:
     def undo(self) -> bool:
         if not self.history:
             return False
+        if not hasattr(self, "_future"):
+            self._future = []
+        self._future.append(
+            Revision(self.text, blocks=list(self.blocks), unplaced_text=self.unplaced_text)
+        )
         revision = self.history.pop()
         self.text = revision.text
         self.blocks = list(revision.blocks)
         self.unplaced_text = revision.unplaced_text
+        return True
+
+    def redo(self) -> bool:
+        if not getattr(self, "_future", []):
+            return False
+        revision = self._future.pop()
+        self.history.append(
+            Revision(self.text, blocks=list(self.blocks), unplaced_text=self.unplaced_text)
+        )
+        self.history = self.history[-50:]
+        self.text, self.blocks, self.unplaced_text = (
+            revision.text,
+            list(revision.blocks),
+            revision.unplaced_text,
+        )
         return True
 
 
