@@ -59,6 +59,8 @@ class MainWindow(WorkspaceControls, QMainWindow):
         self.init_presentation()
         self.setAcceptDrops(True)
         self.build_ui()
+        from chtec.ui.dataset_controller import DatasetController
+        self.dataset_controller = DatasetController(self)
         self.task_elapsed = QElapsedTimer()
         self.task_timer = QTimer(self)
         self.task_timer.timeout.connect(self.update_task_time)
@@ -135,6 +137,8 @@ class MainWindow(WorkspaceControls, QMainWindow):
         )
         self.setWindowModified(self.dirty)
         self.sync_workspace()
+        if hasattr(self, "dataset_controller"):
+            self.dataset_controller.notify()
 
     def add_pages(self, pages):
         first = len(self.document.pages)
@@ -1134,7 +1138,12 @@ class MainWindow(WorkspaceControls, QMainWindow):
                 )
             )
             event.ignore()
-        elif self.confirm_discard():
+        elif getattr(self, "_dataset_close_approved", False) or self.confirm_discard():
+            self._dataset_close_approved = True
+            if not self.dataset_controller.request_close():
+                self.statusBar().showMessage(tr("Завершаю сохранение датасета перед закрытием."))
+                event.ignore()
+                return
             self.save_ui()
             self.presentation.close()
             event.accept()

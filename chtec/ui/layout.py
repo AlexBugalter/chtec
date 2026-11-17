@@ -426,6 +426,7 @@ class BlockDialog(QDialog):
 class LayoutPane(QWidget):
     changed = Signal()
     refine_requested = Signal(str)
+    training_requested = Signal(str)
     page_chosen = Signal(object)
 
     def __init__(self):
@@ -809,6 +810,9 @@ class LayoutPane(QWidget):
     def context_menu(self, id, pos):
         block = next(b for b in self.page.blocks if b.id == id)
         menu = QMenu(self)
+        training = menu.addAction(tr("Подтвердить текст для обучения…"),
+                                  lambda: self.training_requested.emit(id))
+        training.setEnabled(not self.busy and bool(block.text.strip()))
         edit = menu.addAction(tr("Редактировать"), lambda: self.edit_block(id))
         menu.addAction(tr("Копировать"), lambda: QApplication.clipboard().setText(block.text))
         paste = menu.addAction(

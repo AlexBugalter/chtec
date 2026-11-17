@@ -39,3 +39,8 @@ build/
 /tools/*
 !/tools/stop_app.ps1
 !/tools/create_layout_fixture.py
+
+# Local training collections and exported examples
+*.sqlite3
+*.sqlite3-*
+*.jsonl

@@ -8,7 +8,7 @@
 ![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)
 ![UI](https://img.shields.io/badge/UI-PySide6-315E49)
 ![Models](https://img.shields.io/badge/LLM-local%20%2B%20cloud-315E49)
-![Version](https://img.shields.io/badge/version-0.8.1-617368)
+![Version](https://img.shields.io/badge/version-0.9.0-617368)
 
 [Возможности](#возможности) · [Установка](#установка) · [Первый документ](#первый-документ) · [Архитектура](docs/ARCHITECTURE.md)
 
@@ -37,6 +37,7 @@
 | **Редактирование** | Ручная правка текста и зон, синхронизация панелей, отмена и повтор |
 | **Уточнение** | Повторное чтение увеличенного фрагмента и предложения правок от LLM |
 | **Экспорт** | JSON-проект, пространственные PDF/HTML, линейные TXT/Markdown/DOCX |
+| **Датасет** | Локальные пары изображение/текст, черновики, ручное подтверждение, экспорт для vision fine-tuning |
 | **Расширения** | Дополнительные импортёры и экспортёры через Python entry points |
 
 Расположение восстанавливается **на уровне блоков** печатным шрифтом.
