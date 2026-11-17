@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
+    QSplitter,
     QVBoxLayout,
     QWidget,
 )
@@ -30,6 +31,7 @@ from PySide6.QtWidgets import (
 from chtec.domain_errors import AppError
 from chtec.layout import TextBlock
 from chtec.spatial import fitted_text, image_size
+from chtec.ui.translations import tr
 from chtec.ui.widgets import RevisionEditor
 from chtec.ui.zone_geometry import CanvasGeometryMixin
 
@@ -53,7 +55,9 @@ class BlockItem(QGraphicsPolygonItem):
         self.setRotation(block.angle)
         self.setFlag(self.GraphicsItemFlag.ItemIsSelectable)
         self.setToolTip(
-            ("Проверено" if block.verified else "Привязка требует проверки") + "\n" + block.text
+            (tr("Проверено") if block.verified else tr("Привязка требует проверки"))
+            + "\n"
+            + block.text
         )
         if digital:
             lines, size = fitted_text(block.text, w, h)
@@ -143,7 +147,7 @@ class LayoutCanvas(CanvasGeometryMixin, QGraphicsView):
                 page_size = image_size(page)
             else:
                 if not pixmap.loadFromData(page.image_png, "PNG") or pixmap.isNull():
-                    raise AppError("Не удалось загрузить изображение страницы для просмотра.")
+                    raise AppError(tr("Не удалось загрузить изображение страницы для просмотра."))
                 page_size = (pixmap.width(), pixmap.height())
         self._source_pixmap = pixmap
         self.page_size = page_size
@@ -172,8 +176,10 @@ class LayoutCanvas(CanvasGeometryMixin, QGraphicsView):
                 font = QFont("Arial")
                 font.setPixelSize(max(12, round(w / 45)))
                 message = self.scene().addSimpleText(
-                    "Нет координат текста.\nИспользуйте текстовый вид\nили создайте разметку.", font
+                    tr("Нет координат текста.\nИспользуйте текстовый вид\nили создайте разметку."),
+                    font,
                 )
+                message.setData(1, "empty-layout")
                 bounds = message.boundingRect()
                 message.setPos((w - bounds.width()) / 2, (h - bounds.height()) / 2)
         for block in page.blocks:
@@ -191,6 +197,16 @@ class LayoutCanvas(CanvasGeometryMixin, QGraphicsView):
         # and their indexing/lifetime during zone selection and overlay rebuilding.
         if not self.digital and not self._source_pixmap.isNull():
             painter.drawPixmap(QPointF(0, 0), self._source_pixmap)
+
+    def retranslate(self):
+        for item in self.block_items.values():
+            prefix = tr("Проверено") if item.block.verified else tr("Привязка требует проверки")
+            item.setToolTip(prefix + "\n" + item.block.text)
+        for item in self.scene().items():
+            if item.data(1) == "empty-layout":
+                item.setText(
+                    tr("Нет координат текста.\nИспользуйте текстовый вид\nили создайте разметку.")
+                )
 
     def selection_changed(self):
         ids = [i.block_id for i in self.scene().selectedItems() if isinstance(i, BlockItem)]
@@ -322,7 +338,7 @@ class LayoutCanvas(CanvasGeometryMixin, QGraphicsView):
 class BlockDialog(QDialog):
     def __init__(self, block, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Редактировать текстовый блок")
+        self.setWindowTitle(tr("Редактировать текстовый блок"))
         self.resize(620, 420)
         layout = QVBoxLayout(self)
         self.editor = RevisionEditor()
@@ -336,11 +352,16 @@ class BlockDialog(QDialog):
         self.angle.setRange(-360, 360)
         self.angle.setSuffix("°")
         self.angle.setValue(block.angle)
-        form.addRow("Поворот по часовой стрелке", self.angle)
+        form.addRow(tr("Поворот по часовой стрелке"), self.angle)
         self.coordinates = {}
         for key, title, value in zip(
             ("left", "top", "right", "bottom"),
-            ("Левая граница", "Верхняя граница", "Правая граница", "Нижняя граница"),
+            (
+                tr("Левая граница"),
+                tr("Верхняя граница"),
+                tr("Правая граница"),
+                tr("Нижняя граница"),
+            ),
             block.rect,
         ):
             spin = QDoubleSpinBox()
@@ -367,7 +388,7 @@ class BlockDialog(QDialog):
                 "draft", self.editor.toPlainText(), self.rect_value(), self.angle.value()
             ).validated()
         except AppError as exc:
-            QMessageBox.warning(self, "Границы зоны", str(exc))
+            QMessageBox.warning(self, tr("Границы зоны"), str(exc))
             return
         self.accept()
 
@@ -387,49 +408,60 @@ class LayoutPane(QWidget):
         layout = QVBoxLayout(self)
         toolbar = QHBoxLayout()
         self.page_selector = QComboBox()
+        self.page_selector.setMaximumWidth(180)
         toolbar.addWidget(self.page_selector)
-        self.edit_mode_button = QPushButton("Правка зон")
+        self.edit_mode_button = QPushButton(tr("Правка зон"))
         self.edit_mode_button.setCheckable(True)
         self.edit_mode_button.toggled.connect(self.set_edit_mode)
         toolbar.addWidget(self.edit_mode_button)
-        self.new_zone_button = QPushButton("Новая зона")
+        self.new_zone_button = QPushButton("+")
+        self.new_zone_button.setToolTip(tr("Новая зона"))
         self.new_zone_button.clicked.connect(self.start_new_zone)
         toolbar.addWidget(self.new_zone_button)
-        self.delete_zone_button = QPushButton("Удалить зоны")
+        self.delete_zone_button = QPushButton("−")
+        self.delete_zone_button.setToolTip(tr("Удалить зоны"))
         self.delete_zone_button.clicked.connect(self.delete_selected)
         toolbar.addWidget(self.delete_zone_button)
-        self.templates_button = QPushButton("Шаблоны")
-        templates = QMenu(self.templates_button)
-        templates.addAction("Сохранить зоны как шаблон…", self.save_template)
-        templates.addAction("Применить шаблон…", self.open_template)
-        self.templates_button.setMenu(templates)
-        toolbar.addWidget(self.templates_button)
-        layout.addLayout(toolbar)
-        toolbar = QHBoxLayout()
-        self.draw = QPushButton("Выделить участок")
+        self.draw = QPushButton(tr("Выделить участок"), self)
         self.draw.clicked.connect(self.begin_area)
-        self.add = QPushButton("Создать / привязать блок")
+        self.add = QPushButton(tr("Создать / привязать блок"), self)
         self.add.clicked.connect(self.add_block)
-        self.read = QPushButton("Уточнить выбранный блок")
+        self.read = QPushButton(tr("Уточнить выбранный блок"), self)
         self.read.clicked.connect(
             lambda: self.refine_requested.emit(self.selected_ids[0]) if self.selected_ids else None
         )
-        self.relocate = QPushButton("Перепривязать")
+        self.relocate = QPushButton(tr("Перепривязать"), self)
         self.relocate.clicked.connect(self.relocate_block)
+        self.templates_button = QPushButton("⋯")
+        self.templates_button.setToolTip(tr("Действия с зонами и шаблонами"))
+        tools = QMenu(self.templates_button)
+        tools.setToolTipsVisible(True)
+        self.tool_actions = []
         for button in (self.draw, self.add, self.read, self.relocate):
-            toolbar.addWidget(button)
+            button.hide()
+            action = tools.addAction(button.text(), button.click)
+            action.setToolTip(button.text())
+            self.tool_actions.append((action, button))
+        tools.addSeparator()
+        tools.addAction(tr("Сохранить зоны как шаблон…"), self.save_template)
+        tools.addAction(tr("Применить шаблон…"), self.open_template)
+        self.templates_button.setMenu(tools)
+        toolbar.addWidget(self.templates_button)
+        toolbar.addStretch()
         layout.addLayout(toolbar)
         self.note = QLabel(
-            "Фото слева · цифровая копия справа · колесо — масштаб · двойной щелчок — правка"
+            tr(("Фото слева · цифровая копия справа · колесо — масштаб · двойной щелчок — правка"))
         )
         self.note.setWordWrap(True)
         layout.addWidget(self.note)
-        row = QHBoxLayout()
+        self.splitter = QSplitter(Qt.Orientation.Horizontal)
         self.source = LayoutCanvas()
         self.digital = LayoutCanvas(True)
-        row.addWidget(self.source)
-        row.addWidget(self.digital)
-        layout.addLayout(row)
+        self.splitter.addWidget(self.source)
+        self.splitter.addWidget(self.digital)
+        self.splitter.setChildrenCollapsible(False)
+        self.splitter.setSizes([600, 600])
+        layout.addWidget(self.splitter, 1)
         for canvas in (self.source, self.digital):
             canvas.chosen.connect(self.select_ids)
             canvas.edit_requested.connect(self.edit_block)
@@ -445,13 +477,13 @@ class LayoutPane(QWidget):
             current = self.page
             QTimer.singleShot(0, lambda: self.finish_new_zone(current))
         self.note.setText(
-            "Область выделена. Создайте блок или выберите пересекающийся текст для уточнения."
+            tr(("Область выделена. Создайте блок или выберите пересекающийся текст для уточнения."))
         )
 
     def begin_area(self):
         self.source.draw_area = True
         self.source.setDragMode(self.source.DragMode.NoDrag)
-        self.note.setText("Обведите участок на фотографии слева.")
+        self.note.setText(tr("Обведите участок на фотографии слева."))
 
     def set_page(self, page):
         # Bind the new page only after its photo can actually be displayed.
@@ -463,17 +495,30 @@ class LayoutPane(QWidget):
         self._new_zone_pending = False
         if page and page.unplaced_text:
             self.note.setText(
-                "Остался текст без координат. Выделите его во вкладке «Текст и фрагменты» "
-                "и привяжите к участку."
+                tr(
+                    (
+                        "Остался текст без координат. Выделите его во вкладке «Текст и "
+                        "фрагменты» и привяжите к участку."
+                    )
+                )
             )
         elif page and not page.blocks:
             self.note.setText(
-                "Разметки пока нет. Создайте области вручную "
-                "или нажмите «Распознать с расположением»."
+                tr(
+                    (
+                        "Разметки пока нет. Создайте области вручную или нажмите "
+                        "«Распознать с расположением»."
+                    )
+                )
             )
         else:
             self.note.setText(
-                "Фото слева · цифровая копия справа · колесо — масштаб · двойной щелчок — правка"
+                tr(
+                    (
+                        "Фото слева · цифровая копия справа · колесо — масштаб · двойной "
+                        "щелчок — правка"
+                    )
+                )
             )
         self.set_busy(self.busy)
 
@@ -491,6 +536,8 @@ class LayoutPane(QWidget):
             widget.setEnabled(not busy and self.page is not None)
         self.read.setEnabled(not busy and len(self.selected_ids) == 1)
         self.relocate.setEnabled(not busy and len(self.selected_ids) == 1 and self.area is not None)
+        for action, button in self.tool_actions:
+            action.setEnabled(button.isEnabled())
 
     def select_ids(self, ids):
         self.selected_ids = list(ids)
@@ -505,10 +552,14 @@ class LayoutPane(QWidget):
         if self.edit_mode_button.isChecked() != bool(enabled):
             self.edit_mode_button.setChecked(bool(enabled))
         self.note.setText(
-            "Тяните зону или угловые маркеры на любой стороне. "
-            "Delete — удалить, Esc — отменить движение."
+            tr(
+                (
+                    "Тяните зону или угловые маркеры на любой стороне. Delete — "
+                    "удалить, Esc — отменить движение."
+                )
+            )
             if enabled
-            else "Колесо — масштаб, левая кнопка — перемещение страницы."
+            else tr("Колесо — масштаб, левая кнопка — перемещение страницы.")
         )
 
     def preview_geometry(self, identifier, rect):
@@ -546,14 +597,18 @@ class LayoutPane(QWidget):
             return
         self._new_zone_pending = True
         self.begin_area()
-        self.note.setText("Обведите новую зону на оригинале. Текст можно добавить двойным щелчком.")
+        self.note.setText(
+            tr("Обведите новую зону на оригинале. Текст можно добавить двойным щелчком.")
+        )
 
     def finish_new_zone(self, current):
         if not self._new_zone_pending or self.busy or self.page is not current or self.area is None:
             return
         block = TextBlock(uuid4().hex, "", tuple(self.area), verified=True)
         unplaced = self.page.unplaced_text if self.page.blocks else self.page.text
-        self.page.replace_blocks([*self.page.blocks, block], "Новая зона", unplaced_text=unplaced)
+        self.page.replace_blocks(
+            [*self.page.blocks, block], tr("Новая зона"), unplaced_text=unplaced
+        )
         self._new_zone_pending = False
         self.refresh_page([block.id])
         self.changed.emit()
@@ -572,35 +627,37 @@ class LayoutPane(QWidget):
 
         if self.busy or not self.page or not self.page.blocks:
             return
-        name, ok = QInputDialog.getText(self, "Название шаблона", "Название формы:")
+        name, ok = QInputDialog.getText(self, tr("Название шаблона"), tr("Название формы:"))
         if not ok or not name.strip():
             return
         path, _ = QFileDialog.getSaveFileName(
             self,
-            "Сохранить шаблон зон",
+            tr("Сохранить шаблон зон"),
             str(Path.cwd() / (name.strip() + ".chtec-template.json")),
-            "Шаблон зон (*.json)",
+            tr("Шаблон зон (*.json)"),
         )
         if not path:
             return
         try:
             ZoneTemplate.from_page(self.page, name).save(path)
-            self.note.setText("Шаблон сохранён: " + path)
+            self.note.setText(tr("Шаблон сохранён: ") + path)
         except AppError as exc:
-            QMessageBox.warning(self, "Шаблон зон", str(exc))
+            QMessageBox.warning(self, tr("Шаблон зон"), str(exc))
 
     def open_template(self):
         from chtec.zone_templates import ZoneTemplate
 
         if self.busy or not self.page:
             return
-        path, _ = QFileDialog.getOpenFileName(self, "Выбрать шаблон зон", "", "Шаблон зон (*.json)")
+        path, _ = QFileDialog.getOpenFileName(
+            self, tr("Выбрать шаблон зон"), "", tr("Шаблон зон (*.json)")
+        )
         if not path:
             return
         try:
             self.apply_template(ZoneTemplate.load(path))
         except AppError as exc:
-            QMessageBox.warning(self, "Шаблон зон", str(exc))
+            QMessageBox.warning(self, tr("Шаблон зон"), str(exc))
 
     def apply_template(self, template):
         import copy
@@ -613,19 +670,27 @@ class LayoutPane(QWidget):
         dialog.draft.replace_blocks(dialog.draft.blocks, unplaced_text=draft.unplaced_text)
         if template.aspect_differs(self.page):
             dialog.pane.note.setText(
-                "Пропорции листа отличаются: проверьте границы. "
-                "Прежний текст сохранится без привязки."
+                tr(
+                    (
+                        "Пропорции листа отличаются: проверьте границы. Прежний текст "
+                        "сохранится без привязки."
+                    )
+                )
             )
         else:
             dialog.pane.note.setText(
-                "Шаблон содержит только зоны. Прежний текст сохранится без привязки; "
-                "поля можно распознать заново."
+                tr(
+                    (
+                        "Шаблон содержит только зоны. Прежний текст сохранится без "
+                        "привязки; поля можно распознать заново."
+                    )
+                )
             )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         self.page.replace_blocks(
             dialog.draft.blocks,
-            "Применение шаблона " + template.name,
+            tr("Применение шаблона ") + template.name,
             unplaced_text=dialog.draft.unplaced_text,
         )
         self.refresh_page()
@@ -640,7 +705,7 @@ class LayoutPane(QWidget):
                 replace(b, rect=tuple(self.area), verified=True) if b.id == id else b
                 for b in self.page.blocks
             ],
-            "Новая область блока",
+            tr("Новая область блока"),
         )
         self.refresh_page([id])
         self.changed.emit()
@@ -666,7 +731,7 @@ class LayoutPane(QWidget):
                     else b
                     for b in self.page.blocks
                 ],
-                "Свойства зоны",
+                tr("Свойства зоны"),
             )
         self.refresh_page([id])
         self.changed.emit()
@@ -685,7 +750,9 @@ class LayoutPane(QWidget):
         if self.busy or not self.page:
             return
         if not self.area:
-            self.note.setText("Сначала обведите область на фотографии кнопкой «Выделить участок».")
+            self.note.setText(
+                tr("Сначала обведите область на фотографии кнопкой «Выделить участок».")
+            )
             return
         block = TextBlock(uuid4().hex, "", self.area, verified=True)
         dialog = BlockDialog(block, self)
@@ -701,26 +768,31 @@ class LayoutPane(QWidget):
                 rect=dialog.rect_value(),
             )
         )
-        self.page.replace_blocks(blocks, "Ручная разметка", unplaced_text=unplaced)
+        self.page.replace_blocks(blocks, tr("Ручная разметка"), unplaced_text=unplaced)
         self.refresh_page([block.id])
         self.changed.emit()
 
     def context_menu(self, id, pos):
         block = next(b for b in self.page.blocks if b.id == id)
         menu = QMenu(self)
-        edit = menu.addAction("Редактировать", lambda: self.edit_block(id))
-        menu.addAction("Копировать", lambda: QApplication.clipboard().setText(block.text))
+        edit = menu.addAction(tr("Редактировать"), lambda: self.edit_block(id))
+        menu.addAction(tr("Копировать"), lambda: QApplication.clipboard().setText(block.text))
         paste = menu.addAction(
-            "Вставить", lambda: self.change_block(id, QApplication.clipboard().text(), block.angle)
+            tr("Вставить"),
+            lambda: self.change_block(id, QApplication.clipboard().text(), block.angle),
         )
-        delete = menu.addAction("Удалить текст", lambda: self.change_block(id, "", block.angle))
-        delete_zone = menu.addAction("Удалить зону", self.delete_selected)
-        refine = menu.addAction("Уточнить с помощью модели", lambda: self.refine_requested.emit(id))
-        verify = menu.addAction("Подтвердить положение и угол", lambda: self.verify_geometry(id))
-        unlink = menu.addAction("Убрать привязку, сохранить текст", lambda: self.unlink(id))
-        earlier = menu.addAction("Раньше в порядке чтения", lambda: self.reorder(id, -1))
-        later = menu.addAction("Позже в порядке чтения", lambda: self.reorder(id, 1))
-        undo = menu.addAction("Отменить правку", self.undo)
+        delete = menu.addAction(tr("Удалить текст"), lambda: self.change_block(id, "", block.angle))
+        delete_zone = menu.addAction(tr("Удалить зону"), self.delete_selected)
+        refine = menu.addAction(
+            tr("Уточнить с помощью модели"), lambda: self.refine_requested.emit(id)
+        )
+        verify = menu.addAction(
+            tr("Подтвердить положение и угол"), lambda: self.verify_geometry(id)
+        )
+        unlink = menu.addAction(tr("Убрать привязку, сохранить текст"), lambda: self.unlink(id))
+        earlier = menu.addAction(tr("Раньше в порядке чтения"), lambda: self.reorder(id, -1))
+        later = menu.addAction(tr("Позже в порядке чтения"), lambda: self.reorder(id, 1))
+        undo = menu.addAction(tr("Отменить правку"), self.undo)
         for action in (
             edit,
             paste,
@@ -741,7 +813,7 @@ class LayoutPane(QWidget):
             return
         self.page.replace_blocks(
             [replace(b, verified=True) if b.id == id else b for b in self.page.blocks],
-            "Проверка геометрии",
+            tr("Проверка геометрии"),
         )
         self.refresh_page([id])
         self.changed.emit()
@@ -753,7 +825,7 @@ class LayoutPane(QWidget):
         index = next(i for i, b in enumerate(blocks) if b.id == id)
         target = max(0, min(len(blocks) - 1, index + step))
         blocks.insert(target, blocks.pop(index))
-        self.page.replace_blocks(blocks, "Порядок чтения")
+        self.page.replace_blocks(blocks, tr("Порядок чтения"))
         self.refresh_page([id])
         self.changed.emit()
 
@@ -763,7 +835,9 @@ class LayoutPane(QWidget):
         block = next(b for b in self.page.blocks if b.id == id)
         unplaced = "\n\n".join(t for t in (self.page.unplaced_text, block.text) if t)
         self.page.replace_blocks(
-            [b for b in self.page.blocks if b.id != id], "Отмена привязки", unplaced_text=unplaced
+            [b for b in self.page.blocks if b.id != id],
+            tr("Отмена привязки"),
+            unplaced_text=unplaced,
         )
         self.refresh_page()
         self.changed.emit()
@@ -779,13 +853,17 @@ class LayoutProposalDialog(QDialog):
         import copy
 
         super().__init__(parent)
-        self.setWindowTitle("Проверка расположения и текста")
+        self.setWindowTitle(tr("Проверка расположения и текста"))
         self.resize(1200, 760)
         layout = QVBoxLayout(self)
         layout.addWidget(
             QLabel(
-                "Разметка предложена моделью. Сверьте области, углы и текст. "
-                "Двойной щелчок — исправить блок."
+                tr(
+                    (
+                        "Разметка предложена моделью. Сверьте области, углы и текст. "
+                        "Двойной щелчок — исправить блок."
+                    )
+                )
             )
         )
         self.draft = copy.deepcopy(page)

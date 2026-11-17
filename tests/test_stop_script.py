@@ -1,7 +1,6 @@
 import os
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 import pytest
@@ -35,7 +34,30 @@ def test_stop_script_closes_dedicated_native_app(tmp_path, force):
     env = dict(os.environ, QT_QPA_PLATFORM="windows", CHTEC_CONFIG=str(tmp_path / "config.json"))
     process = subprocess.Popen([sys.executable, "-m", "chtec"], cwd=root, env=env)
     try:
-        time.sleep(2)
+        # A fixed sleep can race native Qt startup (measured 3.4 s on this host).
+        # Wait for this process or its venv child to expose an actual window.
+        readiness = r"""
+        $RootPid = ROOT_PID
+        $Deadline = [DateTime]::UtcNow.AddSeconds(12)
+        do {
+            $Children = Get-CimInstance Win32_Process -Filter "ParentProcessId=$RootPid"
+            $Related = @($RootPid) + @($Children |
+                Select-Object -ExpandProperty ProcessId)
+            foreach ($RelatedId in $Related) {
+                $Candidate = Get-Process -Id $RelatedId -ErrorAction SilentlyContinue
+                if ($Candidate -and $Candidate.MainWindowHandle -ne 0) { exit 0 }
+            }
+            Start-Sleep -Milliseconds 100
+        } while ([DateTime]::UtcNow -lt $Deadline)
+        exit 1
+        """.replace("ROOT_PID", str(process.pid))
+        ready = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", readiness],
+            capture_output=True,
+            text=True,
+            timeout=18,
+        )
+        assert ready.returncode == 0, "Dedicated native test window did not become ready"
         assert process.poll() is None
         command = [
             "powershell",

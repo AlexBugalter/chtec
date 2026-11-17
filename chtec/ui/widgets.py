@@ -2,6 +2,8 @@ from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QKeySequence, QPixmap
 from PySide6.QtWidgets import QLabel, QMenu, QPlainTextEdit, QRubberBand, QScrollArea, QStyle
 
+from chtec.ui.translations import tr
+
 
 class RevisionEditor(QPlainTextEdit):
     """Use one domain revision history for typing, OCR, model edits and undo."""
@@ -25,21 +27,22 @@ class RevisionEditor(QPlainTextEdit):
     def edit_menu(self):
         menu = QMenu(self)
         edit = menu.addAction(
-            "Редактировать", self.block_edit_requested.emit if self.spatial_edit else self.setFocus
+            tr("Редактировать"),
+            self.block_edit_requested.emit if self.spatial_edit else self.setFocus,
         )
         edit.setEnabled(not self.isReadOnly() or self.spatial_edit)
-        undo = menu.addAction("Отменить правку\tCtrl+Z", self.undo_requested.emit)
+        undo = menu.addAction(tr("Отменить правку\tCtrl+Z"), self.undo_requested.emit)
         undo.setEnabled(not self.isReadOnly())
         menu.addSeparator()
-        cut = menu.addAction("Вырезать", self.cut)
+        cut = menu.addAction(tr("Вырезать"), self.cut)
         cut.setEnabled(not self.isReadOnly() and self.textCursor().hasSelection())
-        menu.addAction("Копировать", self.copy)
-        paste = menu.addAction("Вставить", self.paste)
+        menu.addAction(tr("Копировать"), self.copy)
+        paste = menu.addAction(tr("Вставить"), self.paste)
         paste.setEnabled(not self.isReadOnly())
-        delete = menu.addAction("Удалить", lambda: self.textCursor().removeSelectedText())
+        delete = menu.addAction(tr("Удалить"), lambda: self.textCursor().removeSelectedText())
         delete.setEnabled(not self.isReadOnly() and self.textCursor().hasSelection())
         menu.addSeparator()
-        menu.addAction("Выделить всё", self.selectAll)
+        menu.addAction(tr("Выделить всё"), self.selectAll)
         return menu
 
     def contextMenuEvent(self, event):
@@ -53,7 +56,7 @@ class ImagePreview(QScrollArea):
     def __init__(self):
         super().__init__()
         self.setWidgetResizable(True)
-        self.label = QLabel("Добавьте фото или PDF\nдля просмотра оригинала")
+        self.label = QLabel(tr("Добавьте фото или PDF\nдля просмотра оригинала"))
         self.label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.label.setStyleSheet("color: #7b837c; background: transparent; padding: 20px;")
         self.original = QPixmap()
@@ -92,7 +95,7 @@ class ImagePreview(QScrollArea):
         self._render_key = None
         self.label.clear()
         self.label.setMinimumSize(0, 0)
-        self.label.setText("Добавьте фото или PDF\nдля просмотра оригинала")
+        self.label.setText(tr("Добавьте фото или PDF\nдля просмотра оригинала"))
         self.zoom_changed.emit(self.zoom)
         self._update_cursor()
 

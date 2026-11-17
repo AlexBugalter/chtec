@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "chtec"
-version = "0.6.0"
+version = "0.7.0"
 description = "Handwritten document transcription with local and cloud models"
 requires-python = ">=3.11"
 dependencies = ["PySide6>=6.10,<7", "Pillow>=12,<13", "PyMuPDF>=1.26,<2", "python-docx>=1.2,<2", "rapidocr>=3.10,<4", "onnxruntime>=1.20,<2"]
@@ -22,6 +22,9 @@ chtec = "chtec.__main__:main"
 
 [tool.setuptools.packages.find]
 include = ["chtec*"]
+
+[tool.setuptools.package-data]
+"chtec.ui" = ["en.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

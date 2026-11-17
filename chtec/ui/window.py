@@ -2,25 +2,16 @@ import copy
 from dataclasses import replace
 from pathlib import Path
 
-from PySide6.QtCore import QElapsedTimer, QSize, Qt, QTimer
-from PySide6.QtGui import QAction, QFont, QIcon, QKeySequence, QPixmap
+from PySide6.QtCore import QElapsedTimer, Qt, QTimer
+from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import (
-    QComboBox,
     QDialog,
     QFileDialog,
-    QHBoxLayout,
     QLabel,
-    QLineEdit,
-    QListWidget,
     QListWidgetItem,
     QMainWindow,
     QMessageBox,
-    QProgressBar,
     QPushButton,
-    QSplitter,
-    QTabWidget,
-    QVBoxLayout,
-    QWidget,
 )
 
 from chtec import __version__
@@ -32,14 +23,14 @@ from chtec.providers import PROVIDERS, CloudSettings, create_model, destination
 from chtec.regions import ImageRegion, RegionRecognitionService
 from chtec.services import DocumentService
 from chtec.ui.dialogs import ExportPreviewDialog, ProposalDialog, SettingsDialog
-from chtec.ui.layout import LayoutPane, LayoutProposalDialog
-from chtec.ui.style import STYLE
-from chtec.ui.widgets import ImagePreview, RevisionEditor
+from chtec.ui.layout import LayoutProposalDialog
+from chtec.ui.translations import model_entry_label, tr, translate_message
 from chtec.ui.workers import Worker
+from chtec.ui.workspace import WorkspaceControls, build_workspace
 from chtec.zone_detection import TextZoneDetector
 
 
-class MainWindow(QMainWindow):
+class MainWindow(WorkspaceControls, QMainWindow):
     def __init__(
         self,
         registry,
@@ -61,10 +52,11 @@ class MainWindow(QMainWindow):
         self.dirty = False
         self.worker = None
         self.close_after_task = False
-        self.setWindowTitle(f"Чтец {__version__}[*] — оцифровка рукописей")
-        self.resize(1380, 880)
-        self.setMinimumSize(1000, 680)
-        self.setStyleSheet(STYLE)
+        self.setWindowTitle(tr("Чтец {0}[*] — оцифровка рукописей", f"{__version__}"))
+        available = self.screen().availableGeometry()
+        self.resize(min(1380, available.width() - 32), min(880, available.height() - 64))
+        self.setMinimumSize(800, 560)
+        self.init_presentation()
         self.setAcceptDrops(True)
         self.build_ui()
         self.task_elapsed = QElapsedTimer()
@@ -73,7 +65,7 @@ class MainWindow(QMainWindow):
         self.task_timer.setInterval(1000)
         self.task_time = QLabel()
         self.statusBar().addPermanentWidget(self.task_time)
-        self.statusBar().showMessage("Добавьте снимки, сканы PDF или сохраненный JSON-проект.")
+        self.statusBar().showMessage(tr("Добавьте снимки, сканы PDF или сохраненный JSON-проект."))
         self.refresh_controls()
 
     def button(self, text, slot, primary=False):
@@ -84,207 +76,7 @@ class MainWindow(QMainWindow):
         return button
 
     def build_ui(self):
-        central = QWidget()
-        self.setCentralWidget(central)
-        root = QVBoxLayout(central)
-        root.setContentsMargins(26, 20, 26, 12)
-        root.setSpacing(16)
-        header = QHBoxLayout()
-        brand = QLabel("Чтец")
-        brand.setObjectName("brand")
-        header.addWidget(brand)
-        subtitle = QLabel("РУКОПИСЬ → ТЕКСТ\nЛокально. Страница за страницей.")
-        subtitle.setObjectName("subtitle")
-        header.addWidget(subtitle)
-        header.addStretch()
-        self.open_button = self.button("+ Добавить файлы", self.open_files, True)
-        self.settings_button = self.button("Настройки ИИ", self.open_settings)
-        self.new_button = self.button("Новый документ", self.new_document)
-        header.addWidget(self.new_button)
-        header.addWidget(self.settings_button)
-        header.addWidget(self.open_button)
-        root.addLayout(header)
-
-        if self.profiles is not None:
-            backend_row = QHBoxLayout()
-            backend_row.addWidget(QLabel("Система"))
-            self.backend_selector = QComboBox()
-            for name, provider in PROVIDERS.items():
-                self.backend_selector.addItem(provider.title, name)
-            self.backend_selector.setCurrentIndex(
-                self.backend_selector.findData(self.profiles.selected)
-            )
-            self.backend_selector.currentIndexChanged.connect(self.switch_backend)
-            backend_row.addWidget(self.backend_selector)
-            backend_row.addWidget(QLabel("Модель"))
-            self.model_selector = QComboBox()
-            self.model_selector.setMinimumWidth(220)
-            self.model_selector.setMaximumWidth(390)
-            self.model_selector.setSizeAdjustPolicy(
-                QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
-            )
-            self.model_selector.currentIndexChanged.connect(self.switch_model)
-            backend_row.addWidget(self.model_selector, 1)
-            self.refresh_models_button = self.button("↻", self.refresh_models)
-            self.refresh_models_button.setToolTip("Обновить каталог доступных моделей")
-            backend_row.addWidget(self.refresh_models_button)
-            self.activate_button = self.button("Подключить", self.activate_backend)
-            backend_row.addWidget(self.activate_button)
-            self.backend_status = QLabel("Выберите платформу и модель.")
-            root.addLayout(backend_row)
-            self.backend_status.setWordWrap(True)
-            root.addWidget(self.backend_status)
-
-        toolbar = QHBoxLayout()
-        self.model_label = QLabel()
-        self.model_label.setObjectName("subtitle")
-        toolbar.addWidget(self.model_label)
-        toolbar.addStretch()
-        self.ocr_current = self.button("Распознать страницу", lambda: self.recognize(False))
-        self.ocr_all = self.button("Распознать всё", lambda: self.recognize(True))
-        self.export_button = self.button("Предпросмотр и сохранение", self.export_document, True)
-        for button in (self.ocr_current, self.ocr_all, self.export_button):
-            toolbar.addWidget(button)
-        root.addLayout(toolbar)
-
-        body = QSplitter(Qt.Orientation.Horizontal)
-        pages_pane = QWidget()
-        pages_layout = QVBoxLayout(pages_pane)
-        pages_layout.setContentsMargins(0, 0, 0, 0)
-        self.pages_label = QLabel("СТРАНИЦЫ · 0")
-        self.pages_label.setObjectName("section")
-        pages_layout.addWidget(self.pages_label)
-        self.page_list = QListWidget()
-        self.page_list.setIconSize(QSize(42, 56))
-        self.page_list.currentRowChanged.connect(self.select_page)
-        pages_layout.addWidget(self.page_list)
-        self.delete_button = self.button("Удалить страницу", self.delete_page)
-        pages_layout.addWidget(self.delete_button)
-        self.delete_action = QAction(self.page_list)
-        self.delete_action.setShortcut(QKeySequence(Qt.Key.Key_Delete))
-        self.delete_action.setShortcutContext(Qt.ShortcutContext.WidgetShortcut)
-        self.delete_action.triggered.connect(self.delete_page)
-        self.page_list.addAction(self.delete_action)
-        pages_pane.setMinimumWidth(170)
-        body.addWidget(pages_pane)
-
-        source_pane = QWidget()
-        source_layout = QVBoxLayout(source_pane)
-        source_layout.setContentsMargins(0, 0, 0, 0)
-        source_header = QHBoxLayout()
-        source_label = QLabel("ОРИГИНАЛ")
-        source_label.setObjectName("section")
-        source_header.addWidget(source_label)
-        source_header.addStretch()
-        self.zoom_label = QLabel("100%")
-        source_header.addWidget(self.zoom_label)
-        source_header.addWidget(self.button("−", lambda: self.image.change_zoom(0.8)))
-        source_header.addWidget(self.button("+", lambda: self.image.change_zoom(1.25)))
-        source_layout.addLayout(source_header)
-        region_row = QHBoxLayout()
-        self.region_select_button = self.button("Выделить фрагмент", self.toggle_region_selection)
-        self.region_select_button.setCheckable(True)
-        self.region_read_button = self.button("Прочитать фрагмент", self.recognize_region)
-        region_row.addWidget(self.region_select_button)
-        region_row.addWidget(self.region_read_button)
-        source_layout.addLayout(region_row)
-        self.image = ImagePreview()
-        self.image.region_selected.connect(self.region_selection_changed)
-        self.image.zoom_changed.connect(lambda zoom: self.zoom_label.setText(f"{zoom * 100:.0f}%"))
-        source_layout.addWidget(self.image)
-        gesture_hint = QLabel("Колесо — масштаб · Зажатая левая кнопка — перемещение")
-        gesture_hint.setObjectName("subtitle")
-        gesture_hint.setWordWrap(True)
-        source_layout.addWidget(gesture_hint)
-        body.addWidget(source_pane)
-
-        editor_pane = QWidget()
-        editor_layout = QVBoxLayout(editor_pane)
-        editor_layout.setContentsMargins(0, 0, 0, 0)
-        editor_header = QHBoxLayout()
-        label = QLabel("ЦИФРОВАЯ КОПИЯ")
-        label.setObjectName("section")
-        editor_header.addWidget(label)
-        editor_header.addStretch()
-        self.undo_button = self.button("Отменить правку", self.undo_text)
-        editor_header.addWidget(self.undo_button)
-        editor_layout.addLayout(editor_header)
-        self.editor = RevisionEditor()
-        self.editor.undo_requested.connect(self.undo_text)
-        self.editor.setFont(QFont("Segoe UI", 12))
-        self.editor.setStyleSheet("QPlainTextEdit { padding: 18px; }")
-        self.editor.setPlaceholderText(
-            "Здесь появится распознанный текст.\n\n"
-            "Сверьте его с оригиналом и внесите правки.\n"
-            "Можно начать с ручного ввода."
-        )
-        self.editor.textChanged.connect(self.text_changed)
-        self.editor.selectionChanged.connect(self.text_selection_changed)
-        self.editor.block_edit_requested.connect(self.edit_selected_block)
-        editor_layout.addWidget(self.editor, 1)
-        self.count_label = QLabel("0 знаков")
-        self.count_label.setObjectName("subtitle")
-        editor_layout.addWidget(self.count_label)
-        request_label = QLabel("ПРАВКА С ПОМОЩЬЮ МОДЕЛИ")
-        request_label.setObjectName("section")
-        editor_layout.addWidget(request_label)
-        self.edit_request = QLineEdit()
-        self.edit_request.setPlaceholderText("Например: исправь пунктуацию, сохрани стиль")
-        self.edit_request.returnPressed.connect(self.edit_with_model)
-        editor_layout.addWidget(self.edit_request)
-        self.edit_button = self.button("Предложить правку страницы", self.edit_with_model)
-        editor_layout.addWidget(self.edit_button)
-        self.review_button = self.button("Уточнить страницу по фрагментам", self.review_regions)
-        self.review_button.setToolTip(
-            "Прочитать 4 увеличенных фрагмента и предложить уточнения. "
-            "До 5 запросов к локальной модели; результат требует проверки."
-        )
-        editor_layout.addWidget(self.review_button)
-        body.addWidget(editor_pane)
-        body.setSizes([180, 530, 570])
-        body.setStretchFactor(0, 0)
-        body.setStretchFactor(1, 1)
-        body.setStretchFactor(2, 1)
-        self.layout_pane = LayoutPane()
-        self.layout_pane.changed.connect(self.layout_changed)
-        self.layout_pane.refine_requested.connect(self.refine_block)
-        self.layout_pane.page_chosen.connect(self.layout_selection_changed)
-        self.layout_pane.source.area_chosen.connect(self.binding_area_changed)
-        self.layout_pane.page_selector.currentIndexChanged.connect(self.page_list.setCurrentRow)
-        self.view_tabs = QTabWidget()
-        self.view_tabs.addTab(body, "Текст и фрагменты")
-        self.view_tabs.addTab(self.layout_pane, "Как в оригинале")
-        spatial_row = QHBoxLayout()
-        self.layout_button = self.button("Распознать с расположением", self.recognize_layout)
-        self.detect_zones_button = self.button("Найти зоны локально", self.detect_zones)
-        self.bind_button = self.button("Привязать выделенный текст к участку", self.bind_text)
-        spatial_row.addWidget(self.layout_button)
-        spatial_row.addWidget(self.detect_zones_button)
-        spatial_row.addWidget(self.bind_button)
-        root.addLayout(spatial_row)
-        root.addWidget(self.view_tabs, 1)
-        bottom = QHBoxLayout()
-        hint = QLabel("Сверяйте имена, даты и числа · Неразборчивые места: [неразборчиво]")
-        hint.setObjectName("subtitle")
-        bottom.addWidget(hint)
-        bottom.addStretch()
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setFixedWidth(160)
-        self.progress_bar.setTextVisible(False)
-        self.progress_bar.hide()
-        bottom.addWidget(self.progress_bar)
-        self.cancel_button = self.button("Остановить", self.cancel_task)
-        self.cancel_button.hide()
-        bottom.addWidget(self.cancel_button)
-        root.addLayout(bottom)
-        for shortcut, slot in (
-            (QKeySequence.StandardKey.Open, self.open_files),
-            (QKeySequence.StandardKey.Save, self.export_document),
-        ):
-            action = QAction(self)
-            action.setShortcut(shortcut)
-            action.triggered.connect(slot)
-            self.addAction(action)
+        build_workspace(self)
 
     @property
     def current_page(self):
@@ -332,14 +124,17 @@ class MainWindow(QMainWindow):
             self.image.set_selection_mode(False)
         self.model_label.setText(
             "● "
-            + destination(self.settings)
+            + tr(destination(self.settings))
             + " · "
-            + ((self.runtime_settings or self.settings).ocr_model or "модель не выбрана")
+            + ((self.runtime_settings or self.settings).ocr_model or tr("модель не выбрана"))
         )
         self.model_label.setToolTip(self.settings.base_url)
-        self.pages_label.setText(f"СТРАНИЦЫ · {len(self.document.pages)}")
-        self.count_label.setText(f"{len(self.editor.toPlainText()):,} знаков".replace(",", " "))
+        self.pages_label.setText(tr("СТРАНИЦЫ · {0}", f"{len(self.document.pages)}"))
+        self.count_label.setText(
+            tr("{0} знаков", f"{len(self.editor.toPlainText()):,}").replace(",", " ")
+        )
         self.setWindowModified(self.dirty)
+        self.sync_workspace()
 
     def add_pages(self, pages):
         first = len(self.document.pages)
@@ -348,7 +143,7 @@ class MainWindow(QMainWindow):
             pixmap = QPixmap()
             pixmap.loadFromData(page.image_png, "PNG")
             item = QListWidgetItem(QIcon(pixmap), f"{self.page_list.count() + 1:02}\n{page.source}")
-            item.setToolTip(f"{page.source} · исходная страница {page.number}")
+            item.setToolTip(tr("{0} · исходная страница {1}", f"{page.source}", f"{page.number}"))
             self.page_list.addItem(item)
         self.page_list.setCurrentRow(first)
         self.dirty = True
@@ -381,9 +176,14 @@ class MainWindow(QMainWindow):
         if (
             QMessageBox.question(
                 self,
-                "Удалить страницу?",
-                f"Удалить страницу {index + 1} из документа вместе с её текстом? "
-                "Исходный файл останется на диске.",
+                tr("Удалить страницу?"),
+                tr(
+                    (
+                        "Удалить страницу {0} из документа вместе с её текстом? Исходный "
+                        "файл останется на диске."
+                    ),
+                    f"{index + 1}",
+                ),
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,
             )
@@ -400,11 +200,11 @@ class MainWindow(QMainWindow):
         self.page_list.blockSignals(False)
         self.dirty = True
         self.select_page(selected)
-        self.statusBar().showMessage(f"Страница {index + 1} удалена из документа.")
+        self.statusBar().showMessage(tr("Страница {0} удалена из документа.", f"{index + 1}"))
 
     def text_changed(self):
         if self.current_page:
-            self.current_page.replace_text(self.editor.toPlainText(), "Ручная правка")
+            self.current_page.replace_text(self.editor.toPlainText(), tr("Ручная правка"))
             self.dirty = True
         self.refresh_controls()
 
@@ -427,7 +227,7 @@ class MainWindow(QMainWindow):
         if self.layout_pane.selected_ids:
             self.layout_pane.edit_block(self.layout_pane.selected_ids[0])
         else:
-            self.show_error("Выберите текстовый блок для редактирования.")
+            self.show_error(tr("Выберите текстовый блок для редактирования."))
 
     def text_selection_changed(self):
         page = self.current_page
@@ -445,6 +245,9 @@ class MainWindow(QMainWindow):
         self.layout_pane.select_ids(ids[:1])
 
     def layout_selection_changed(self, ids):
+        from chtec.ui.menus import sync_actions
+
+        sync_actions(self)
         from PySide6.QtGui import QColor, QTextCharFormat, QTextCursor
         from PySide6.QtWidgets import QTextEdit
 
@@ -495,7 +298,7 @@ class MainWindow(QMainWindow):
         selected = cursor.selectedText().replace("\u2029", "\n")
         if not region or not selected:
             self.show_error(
-                "Выделите текст в редакторе и прямоугольник на фото, затем нажмите привязку."
+                tr(("Выделите текст в редакторе и прямоугольник на фото, затем нажмите привязку."))
             )
             return
         raw = self.editor.toPlainText().encode("utf-16-le")
@@ -506,7 +309,7 @@ class MainWindow(QMainWindow):
             # Only unplaced text can acquire a new location; existing IDs stay intact.
             unplaced_start = len(page.text) - len(page.unplaced_text)
             if len(prefix) < unplaced_start:
-                self.show_error("Этот текст уже привязан. Правьте его существующий блок.")
+                self.show_error(tr("Этот текст уже привязан. Правьте его существующий блок."))
                 return
             remainder = prefix[unplaced_start:] + suffix
         else:
@@ -520,14 +323,14 @@ class MainWindow(QMainWindow):
         from dataclasses import replace
 
         block = replace(block, text=dialog.editor.toPlainText(), angle=dialog.angle.value())
-        page.replace_blocks([*page.blocks, block], "Ручная привязка", unplaced_text=remainder)
+        page.replace_blocks([*page.blocks, block], tr("Ручная привязка"), unplaced_text=remainder)
         self.layout_changed()
         self.layout_pane.select_ids([block.id])
         self.view_tabs.setCurrentIndex(1)
         self.layout_pane.note.setText(
-            "Блок привязан. Остальной текст сохранён без координат."
+            tr("Блок привязан. Остальной текст сохранён без координат.")
             if remainder
-            else "Блок привязан к оригиналу."
+            else tr("Блок привязан к оригиналу.")
         )
 
     def detect_zones(self):
@@ -540,18 +343,18 @@ class MainWindow(QMainWindow):
             if self.close_after_task or self.worker.cancel.is_set():
                 return
             if page.text != snapshot.text or page.blocks != snapshot.blocks:
-                self.show_error("Страница изменилась. Повторите поиск зон.")
+                self.show_error(tr("Страница изменилась. Повторите поиск зон."))
                 return
             dialog = LayoutProposalDialog(snapshot, blocks, self)
             dialog.draft.replace_blocks(blocks, unplaced_text=snapshot.text)
             dialog.pane.set_page(dialog.draft)
             dialog.pane.note.setText(
-                "Локальный поиск границ без чтения. Прежний текст сохранится без привязки."
+                tr(("Локальный поиск границ без чтения. Прежний текст сохранится без привязки."))
             )
             if dialog.exec() == QDialog.DialogCode.Accepted:
                 page.replace_blocks(
                     dialog.draft.blocks,
-                    "Локальный поиск зон",
+                    tr("Локальный поиск зон"),
                     unplaced_text=dialog.draft.unplaced_text,
                 )
                 self.layout_changed()
@@ -581,19 +384,21 @@ class MainWindow(QMainWindow):
             if self.close_after_task or self.worker.cancel.is_set():
                 return
             if page.text != snapshot.text or page.blocks != snapshot.blocks:
-                self.show_error("Страница изменилась. Повторите распознавание.")
+                self.show_error(tr("Страница изменилась. Повторите распознавание."))
                 return
             dialog = LayoutProposalDialog(snapshot, blocks, self)
             if dialog.exec() == QDialog.DialogCode.Accepted:
                 page.replace_blocks(
                     dialog.draft.blocks,
-                    "Распознавание с расположением",
+                    tr("Распознавание с расположением"),
                     unplaced_text=dialog.draft.unplaced_text,
                 )
                 self.layout_changed()
                 self.view_tabs.setCurrentIndex(1)
 
-        self.statusBar().showMessage("Локальные границы и чтение фрагментов; потребуется проверка…")
+        self.statusBar().showMessage(
+            tr("Локальные границы и чтение фрагментов; потребуется проверка…")
+        )
         self.run_task(
             lambda job: service.recognize(
                 snapshot, job.cancel, lambda n, total, text: job.progress.emit(n, text)
@@ -621,12 +426,12 @@ class MainWindow(QMainWindow):
             if self.close_after_task or self.worker.cancel.is_set():
                 return
             if page.blocks != snapshot.blocks:
-                self.show_error("Разметка изменилась. Повторите уточнение.")
+                self.show_error(tr("Разметка изменилась. Повторите уточнение."))
                 return
             dialog = ProposalDialog(block.text, text, self)
-            dialog.setWindowTitle("Уточнение связанного блока")
+            dialog.setWindowTitle(tr("Уточнение связанного блока"))
             if dialog.exec() == QDialog.DialogCode.Accepted:
-                page.edit_block(block_id, dialog.proposed_text(), reason="Уточнение блока")
+                page.edit_block(block_id, dialog.proposed_text(), reason=tr("Уточнение блока"))
                 self.layout_changed()
                 self.layout_pane.select_ids([block_id])
 
@@ -638,7 +443,7 @@ class MainWindow(QMainWindow):
         self.refresh_controls()
         if self.region_select_button.isChecked():
             self.statusBar().showMessage(
-                "Обведите фрагмент левой кнопкой. Выделите в редакторе слова для замены."
+                tr("Обведите фрагмент левой кнопкой. Выделите в редакторе слова для замены.")
             )
 
     def region_selection_changed(self, region):
@@ -647,8 +452,12 @@ class MainWindow(QMainWindow):
         self.refresh_controls()
         if region is not None:
             self.statusBar().showMessage(
-                "Фрагмент выделен. Выделите заменяемые слова в тексте "
-                "и нажмите «Прочитать фрагмент»."
+                tr(
+                    (
+                        "Фрагмент выделен. Выделите заменяемые слова в тексте и нажмите "
+                        "«Прочитать фрагмент»."
+                    )
+                )
             )
 
     def binding_area_changed(self, region):
@@ -661,20 +470,26 @@ class MainWindow(QMainWindow):
             return
         if page.text != original:
             self.show_error(
-                "Текст страницы изменился. Повторите уточнение, чтобы не потерять правки."
+                tr("Текст страницы изменился. Повторите уточнение, чтобы не потерять правки.")
             )
             return
         dialog = ProposalDialog(original, proposed, self)
         dialog.setWindowTitle(title)
         note = QLabel(
-            f"{page.source} · исходная страница {page.number}\n"
-            "Проверьте чтение по оригиналу. Поле справа можно исправить вручную.\n"
+            tr(
+                (
+                    "{0} · исходная страница {1}\nПроверьте чтение по оригиналу. Поле "
+                    "справа можно исправить вручную.\n"
+                ),
+                f"{page.source}",
+                f"{page.number}",
+            )
             + (
                 source_note
                 or (
                     image.source_label
                     if image
-                    else "Уточнение по четырём перекрывающимся фрагментам."
+                    else tr("Уточнение по четырём перекрывающимся фрагментам.")
                 )
             )
         )
@@ -688,7 +503,7 @@ class MainWindow(QMainWindow):
         details.setPlainText(evidence)
         details.setMaximumHeight(170)
         details.hide()
-        show_details = QPushButton("Показать повторные чтения")
+        show_details = QPushButton(tr("Показать повторные чтения"))
         show_details.setCheckable(True)
         show_details.toggled.connect(details.setVisible)
         dialog.layout().insertWidget(2, show_details)
@@ -702,14 +517,16 @@ class MainWindow(QMainWindow):
             self.editor.setPlainText(page.text)
             self.editor.blockSignals(False)
         self.refresh_controls()
-        self.statusBar().showMessage("Уточнение применено. Предыдущий текст доступен через отмену.")
+        self.statusBar().showMessage(
+            tr("Уточнение применено. Предыдущий текст доступен через отмену.")
+        )
 
     def recognize_region(self):
         if self.current_page and self.current_page.blocks:
             if self.layout_pane.selected_ids:
                 self.refine_block(self.layout_pane.selected_ids[0])
             else:
-                self.show_error("Выберите связанный текстовый блок в режиме «Как в оригинале».")
+                self.show_error(tr("Выберите связанный текстовый блок в режиме «Как в оригинале»."))
             return
         if self.worker is not None or self.current_page is None or not self.image.selected_region:
             return
@@ -737,12 +554,12 @@ class MainWindow(QMainWindow):
                 page,
                 snapshot.text,
                 prefix + reading.text + suffix,
-                "Распознавание выделенного фрагмента",
+                tr("Распознавание выделенного фрагмента"),
                 reading.text,
                 reading.image,
             )
 
-        self.statusBar().showMessage("Читаю выделенный фрагмент по доступному оригиналу…")
+        self.statusBar().showMessage(tr("Читаю выделенный фрагмент по доступному оригиналу…"))
         self.run_task(lambda _: service.recognize(snapshot, region), result, cancellable=True)
 
     def review_regions(self):
@@ -771,32 +588,37 @@ class MainWindow(QMainWindow):
             self.progress_bar.setRange(0, 5)
             self.progress_bar.setValue(count)
             self.statusBar().showMessage(
-                f"Повторно прочитано фрагментов: {count}/4. "
-                + ("Модель готовит предложение…" if count == 4 else "Читаю следующий…")
+                tr("Повторно прочитано фрагментов: {0}/4. ", f"{count}")
+                + (tr("Модель готовит предложение…") if count == 4 else tr("Читаю следующий…"))
             )
 
         def result(review):
             if review is None:
-                self.statusBar().showMessage("Уточнение остановлено. Текст страницы сохранён.")
+                self.statusBar().showMessage(tr("Уточнение остановлено. Текст страницы сохранён."))
                 return
             evidence = "\n\n".join(
-                f"Фрагмент {i}: {reading.image.source_label}\n{reading.text}"
+                tr(
+                    "Фрагмент {0}: {1}\n{2}",
+                    f"{i}",
+                    f"{reading.image.source_label}",
+                    f"{reading.text}",
+                )
                 for i, reading in enumerate(review.readings, 1)
             )
             self._apply_region_proposal(
                 page,
                 snapshot.text,
                 review.text,
-                "Уточнение страницы по фрагментам",
+                tr("Уточнение страницы по фрагментам"),
                 evidence,
                 source_note=(
-                    "Четыре фрагмента исходного файла."
+                    tr("Четыре фрагмента исходного файла.")
                     if all(reading.image.used_original for reading in review.readings)
-                    else "Есть фрагменты из сохранённой копии: оригинал недоступен."
+                    else tr("Есть фрагменты из сохранённой копии: оригинал недоступен.")
                 ),
             )
 
-        self.statusBar().showMessage("Повторное чтение: 4 фрагмента и предложение правки…")
+        self.statusBar().showMessage(tr("Повторное чтение: 4 фрагмента и предложение правки…"))
         self.run_task(
             lambda job: service.review(
                 snapshot, job.cancel, lambda count, text: job.progress.emit(count, text)
@@ -833,33 +655,39 @@ class MainWindow(QMainWindow):
         self.progress_bar.hide()
         self.cancel_button.hide()
         self.task_timer.stop()
-        self.task_time.setText(f"Завершено за {self.task_elapsed.elapsed() / 1000:.1f} с")
+        self.task_time.setText(
+            tr("Завершено за {0} с", f"{self.task_elapsed.elapsed() / 1000:.1f}")
+        )
         self.refresh_controls()
         if self.close_after_task:
             self.close_after_task = False
             QTimer.singleShot(0, self.close)
 
     def update_task_time(self):
-        self.task_time.setText(f"Ожидание: {self.task_elapsed.elapsed() // 1000} с")
+        self.task_time.setText(tr("Ожидание: {0} с", f"{self.task_elapsed.elapsed() // 1000}"))
 
     def cancel_task(self):
         if self.worker:
             self.worker.cancel.set()
             self.cancel_button.setEnabled(False)
             self.statusBar().showMessage(
-                "Остановка после текущего запроса. Запрос ограничен тайм-аутом модели."
+                tr("Остановка после текущего запроса. Запрос ограничен тайм-аутом модели.")
             )
 
     def show_error(self, message):
+        message = translate_message(message)
         self.statusBar().showMessage(message)
-        QMessageBox.warning(self, "Не удалось завершить операцию", message)
+        QMessageBox.warning(self, tr("Не удалось завершить операцию"), message)
 
     def open_files(self):
         if self.worker:
             return
         extensions = " ".join(f"*{ext}" for ext in self.registry.importers)
         files, _ = QFileDialog.getOpenFileNames(
-            self, "Добавить фотографии и сканы", "", f"Поддерживаемые файлы ({extensions})"
+            self,
+            tr("Добавить фотографии и сканы"),
+            "",
+            tr("Поддерживаемые файлы ({0})", f"{extensions}"),
         )
         if files:
             self.load_paths(files)
@@ -878,13 +706,13 @@ class MainWindow(QMainWindow):
                 validate_image_budget([*existing_pages, *pages])
             return pages
 
-        self.statusBar().showMessage("Подготовка страниц…")
+        self.statusBar().showMessage(tr("Подготовка страниц…"))
         self.run_task(load, self.files_loaded)
 
     def files_loaded(self, pages):
         try:
             self.add_pages(pages)
-            self.statusBar().showMessage(f"Добавлено страниц: {len(pages)}.")
+            self.statusBar().showMessage(tr("Добавлено страниц: {0}.", f"{len(pages)}"))
         except AppError as exc:
             self.show_error(str(exc))
 
@@ -932,7 +760,7 @@ class MainWindow(QMainWindow):
     @property
     def model_settings(self):
         if self.profiles is not None and self.runtime_settings is None:
-            raise AppError("Модель ещё не подключена. Выберите её или нажмите «Подключить».")
+            raise AppError(tr("Модель ещё не подключена. Выберите её или нажмите «Подключить»."))
         return self.runtime_settings or self.settings
 
     def fill_models(self, entries):
@@ -946,11 +774,11 @@ class MainWindow(QMainWindow):
         self.model_selector.blockSignals(True)
         self.model_selector.clear()
         for entry in entries:
-            self.model_selector.addItem(entry.label, entry)
+            self.model_selector.addItem(model_entry_label(entry), entry)
         index = next((i for i, e in enumerate(entries) if e.id == selected), -1)
         if index < 0 and selected:
             entry = ModelEntry(selected, Path(selected).name)
-            self.model_selector.addItem(entry.label, entry)
+            self.model_selector.addItem(model_entry_label(entry), entry)
             index = self.model_selector.count() - 1
         self.model_selector.setCurrentIndex(index)
         self.model_selector.blockSignals(False)
@@ -982,10 +810,12 @@ class MainWindow(QMainWindow):
         self.settings = self.profiles.active.settings
         self.runtime_settings = None
         self.fill_models(self.model_catalogs.get(selected, []))
-        self.backend_status.setText(destination(self.settings) + " · подключение…")
+        self.backend_status.setText(
+            tr("{0} · подключение…", PROVIDERS[self.profiles.selected].title)
+        )
         if isinstance(self.settings, CloudSettings) and not self.settings.api_key:
             self.backend_status.setText(
-                destination(self.settings) + " · введите API-ключ в настройках."
+                tr("{0} · введите API-ключ в настройках.", PROVIDERS[self.profiles.selected].title)
             )
             self.open_settings()
         else:
@@ -1005,14 +835,14 @@ class MainWindow(QMainWindow):
             self.runtime_settings = None
         profile = copy.deepcopy(self.profiles.active)
         cached = self.model_catalogs.get(profile.name)
-        self.backend_status.setText(destination(profile.settings) + " · получение каталога…")
+        self.backend_status.setText(tr("{0} · получение каталога…", PROVIDERS[profile.name].title))
 
         def connect(worker):
             query = copy.deepcopy(profile)
             query.settings = replace(query.settings, timeout=min(query.settings.timeout, 20))
             entries = cached if cached is not None else catalog(query, cancel=worker.cancel)
             if worker.cancel.is_set():
-                raise AppError("Подключение отменено.")
+                raise AppError(tr("Подключение отменено."))
             if catalog_only:
                 return profile, entries, previous_runtime
             selected = (
@@ -1032,15 +862,15 @@ class MainWindow(QMainWindow):
                     profile.model_path = entry.path or entry.id
             if not profile.settings.ocr_model:
                 raise AppError(
-                    "Модели не найдены. Укажите модель в настройках и повторите подключение."
+                    tr("Модели не найдены. Укажите модель в настройках и повторите подключение.")
                 )
             profile.settings.validated()
             if isinstance(profile.settings, CloudSettings):
                 if not profile.settings.api_key:
-                    raise AppError("Введите API-ключ в настройках выбранного поставщика.")
+                    raise AppError(tr("Введите API-ключ в настройках выбранного поставщика."))
                 if not any(e.id == profile.settings.ocr_model for e in entries):
                     raise AppError(
-                        "Модель отсутствует в каталоге этого API-ключа. Выберите доступную."
+                        tr("Модель отсутствует в каталоге этого API-ключа. Выберите доступную.")
                     )
                 self.backend_manager.deactivate()
                 runtime = profile.settings
@@ -1050,7 +880,7 @@ class MainWindow(QMainWindow):
                 )
             if worker.cancel.is_set():
                 self.backend_manager.deactivate()
-                raise AppError("Подключение отменено.")
+                raise AppError(tr("Подключение отменено."))
             return profile, entries, runtime
 
         def ready(result):
@@ -1061,12 +891,9 @@ class MainWindow(QMainWindow):
             self.fill_models(entries)
             self.runtime_settings = runtime
             self.backend_status.setText(
-                destination(self.settings)
-                + (
-                    " · Готово · " + self.settings.ocr_model
-                    if runtime
-                    else " · каталог обновлён; выберите модель."
-                )
+                tr("{0} · Готово · {1}", PROVIDERS[updated.name].title, self.settings.ocr_model)
+                if runtime
+                else tr("{0} · каталог обновлён; выберите модель.", PROVIDERS[updated.name].title)
             )
             self.backend_status.setToolTip(self.settings.base_url)
             try:
@@ -1075,17 +902,22 @@ class MainWindow(QMainWindow):
                 self.show_error(str(exc))
 
         self.run_task(
-            connect, ready, lambda _, text: self.backend_status.setText(text), cancellable=True
+            connect,
+            ready,
+            lambda _, text: self.backend_status.setText(translate_message(text)),
+            cancellable=True,
         )
 
         def failed(message):
             self.runtime_settings = previous_runtime
             state = (
-                " · подключение сохранено; каталог недоступен: "
+                "{0} · подключение сохранено; каталог недоступен: {1}"
                 if previous_runtime
-                else " · не подключено: "
+                else "{0} · не подключено: {1}"
             )
-            self.backend_status.setText(destination(self.settings) + state + message)
+            self.backend_status.setText(
+                tr(state, PROVIDERS[self.profiles.selected].title, translate_message(message))
+            )
             if not self.close_after_task and not self.worker.cancel.is_set():
                 self.show_error(message)
 
@@ -1121,8 +953,8 @@ class MainWindow(QMainWindow):
         if any(self.document.pages[i].text for i in indices):
             answer = QMessageBox.question(
                 self,
-                "Повторное распознавание",
-                "Заменить текст выбранных страниц? Предыдущая версия останется в истории.",
+                tr("Повторное распознавание"),
+                tr("Заменить текст выбранных страниц? Предыдущая версия останется в истории."),
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,
             )
@@ -1137,22 +969,27 @@ class MainWindow(QMainWindow):
 
         def on_page(index, text):
             target = indices[index]
-            self.document.pages[target].replace_text(text, "Распознавание")
+            self.document.pages[target].replace_text(text, tr("Распознавание"))
             self.dirty = True
             if target == self.page_list.currentRow():
                 self.select_page(target)
             self.progress_bar.setRange(0, len(indices))
             self.progress_bar.setValue(index + 1)
-            self.statusBar().showMessage(f"Распознано {index + 1} из {len(indices)} страниц.")
+            self.statusBar().showMessage(
+                tr("Распознано {0} из {1} страниц.", f"{index + 1}", f"{len(indices)}")
+            )
 
-        self.statusBar().showMessage("Модель читает рукопись…")
+        self.statusBar().showMessage(tr("Модель читает рукопись…"))
         self.run_task(
             lambda job: DocumentService(model).recognize(
                 pages, "", job.cancel, lambda i, text: job.progress.emit(i, text)
             ),
             lambda count: self.statusBar().showMessage(
-                f"Обработка завершена: {count} из {len(indices)} страниц. "
-                "Сверьте текст с оригиналом."
+                tr(
+                    "Обработка завершена: {0} из {1} страниц. Сверьте текст с оригиналом.",
+                    f"{count}",
+                    f"{len(indices)}",
+                )
             ),
             on_page,
             cancellable=True,
@@ -1172,7 +1009,7 @@ class MainWindow(QMainWindow):
             else None
         )
         if page.blocks and not block_id:
-            self.show_error("Выберите блок для правки с помощью модели.")
+            self.show_error(tr("Выберите блок для правки с помощью модели."))
             return
         original = next(b.text for b in page.blocks if b.id == block_id) if block_id else page.text
         try:
@@ -1186,17 +1023,21 @@ class MainWindow(QMainWindow):
             if dialog.exec() == QDialog.DialogCode.Accepted:
                 if block_id:
                     page.edit_block(
-                        block_id, dialog.proposed_text(), reason=f"Правка LLM: {instruction}"
+                        block_id,
+                        dialog.proposed_text(),
+                        reason=tr("Правка LLM: {0}", f"{instruction}"),
                     )
                 else:
-                    page.replace_text(dialog.proposed_text(), f"Правка LLM: {instruction}")
+                    page.replace_text(
+                        dialog.proposed_text(), tr("Правка LLM: {0}", f"{instruction}")
+                    )
                 self.dirty = True
                 self.select_page(self.page_list.currentRow())
                 self.statusBar().showMessage(
-                    "Правка применена. Предыдущий текст доступен через отмену."
+                    tr("Правка применена. Предыдущий текст доступен через отмену.")
                 )
 
-        self.statusBar().showMessage("Модель готовит предложение…")
+        self.statusBar().showMessage(tr("Модель готовит предложение…"))
         self.run_task(lambda _: model.edit(original, instruction), proposal)
 
     def export_document(self):
@@ -1208,8 +1049,8 @@ class MainWindow(QMainWindow):
         extension = dialog.format.currentData()
         path, _ = QFileDialog.getSaveFileName(
             self,
-            "Сохранить цифровую копию",
-            f"Рукопись{extension}",
+            tr("Сохранить цифровую копию"),
+            tr("Рукопись{0}", f"{extension}"),
             f"{extension[1:].upper()} (*{extension})",
         )
         if not path:
@@ -1221,8 +1062,8 @@ class MainWindow(QMainWindow):
                 path.exists()
                 and QMessageBox.question(
                     self,
-                    "Заменить файл?",
-                    f"Файл {path.name} существует. Заменить?",
+                    tr("Заменить файл?"),
+                    tr("Файл {0} существует. Заменить?", f"{path.name}"),
                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                     QMessageBox.StandardButton.No,
                 )
@@ -1235,7 +1076,7 @@ class MainWindow(QMainWindow):
             # Only a project contains source images and revision history.
             if extension == ".json":
                 self.dirty = False
-            self.statusBar().showMessage(f"Сохранено: {path}")
+            self.statusBar().showMessage(tr("Сохранено: {0}", f"{path}"))
 
         self.run_task(lambda _: self.registry.export_file(snapshot, path), saved)
 
@@ -1245,9 +1086,13 @@ class MainWindow(QMainWindow):
         return (
             QMessageBox.question(
                 self,
-                "Есть несохраненный проект",
-                "Продолжить без сохранения проекта? Для сохранения оригиналов, текста и истории "
-                "используйте формат JSON в предпросмотре.",
+                tr("Есть несохраненный проект"),
+                tr(
+                    (
+                        "Продолжить без сохранения проекта? Для сохранения оригиналов, "
+                        "текста и истории используйте формат JSON в предпросмотре."
+                    )
+                ),
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,
             )
@@ -1276,10 +1121,17 @@ class MainWindow(QMainWindow):
             self.close_after_task = True
             self.cancel_task()
             self.statusBar().showMessage(
-                "Останавливаю обработку перед закрытием. Ожидание ограничено тайм-аутом модели."
+                tr(
+                    (
+                        "Останавливаю обработку перед закрытием. Ожидание ограничено "
+                        "тайм-аутом модели."
+                    )
+                )
             )
             event.ignore()
         elif self.confirm_discard():
+            self.save_ui()
+            self.presentation.close()
             event.accept()
         else:
             event.ignore()

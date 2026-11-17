@@ -1,31 +1,60 @@
-STYLE = """
-QMainWindow, QDialog { background: #f5f4f0; color: #252e2a; }
-QWidget { font-family: 'Segoe UI'; font-size: 10pt; }
-QLabel#brand { font-size: 26pt; font-weight: 650; letter-spacing: -1px; }
-QLabel#subtitle { color: #737a74; font-size: 10pt; }
-QLabel#section { font-size: 10pt; font-weight: 600; color: #68726c; }
-QPushButton { background: #fff; border: 1px solid #d8ded7; border-radius: 7px;
-              padding: 9px 15px; color: #303b34; }
-QPushButton:hover { background: #e8eee8; border-color: #a6b6a7; }
-QPushButton:pressed { background: #dce8dd; }
-QPushButton:checked { background: #dce8dd; border-color: #63886d; }
-QPushButton:disabled { color: #a7ada7; background: #efefeb; }
-QPushButton#primary { background: #325d48; color: white; border-color: #325d48; }
-QPushButton#primary:hover { background: #254d39; }
-QPushButton#primary:disabled { background: #b0bcb2; border-color: #b0bcb2; }
-QPlainTextEdit, QTextEdit, QTextBrowser, QListWidget, QLineEdit, QComboBox, QSpinBox {
-    background: #fff; border: 1px solid #dce1d9; border-radius: 7px;
-    selection-background-color: #d7e6d7; selection-color: #20382a;
-}
-QLineEdit, QComboBox, QSpinBox { padding: 8px; }
-QLineEdit:focus, QPlainTextEdit:focus, QTextEdit:focus { border-color: #63886d; }
-QListWidget { outline: none; padding: 5px; }
-QListWidget::item { padding: 12px 5px; margin-bottom: 4px; border-radius: 5px; }
-QListWidget::item:selected { background: #e2ebdf; color: #274f38; }
-QScrollArea { background: #e8e9e3; border: 1px solid #dce1d9; border-radius: 7px; }
-QSplitter::handle { background: transparent; width: 12px; }
-QStatusBar { color: #68726c; padding: 4px 16px; }
-QProgressBar { border: none; background: #e1e7df; border-radius: 3px; height: 6px; }
-QProgressBar::chunk { background: #63886d; border-radius: 3px; }
-QToolTip { background: #fff; color: #252e2a; border: 1px solid #b5c6b5; padding: 6px; }
-"""
+"""Semantic themes in Qt logical units; OS DPI is handled by Qt."""
+
+
+def stylesheet(theme="light", scale=100):
+    dark = theme == "dark"
+    bg, panel, border = (
+        ("#181B20", "#22262D", "#383F49") if dark else ("#F7F8FA", "#FFFFFF", "#DDE1E7")
+    )
+    text, muted, accent = (
+        ("#ECEFF4", "#A2ADBB", "#86B5DE") if dark else ("#20242B", "#657080", "#315D82")
+    )
+    hover, selected = ("#303843", "#34495D") if dark else ("#EDF2F7", "#DCE9F5")
+    s = scale / 100
+    pad = round(5 * s)
+    return f"""
+    QMainWindow, QDialog, QWidget#workspace {{ background:{bg}; color:{text}; }}
+    QWidget {{ font-family:'Segoe UI'; font-size:{10 * s}pt; color:{text}; }}
+    QMenuBar, QMenu {{ font-family:'Segoe UI'; font-size:{10 * s}pt; }}
+    QMenuBar::item {{ font: {10 * s}pt 'Segoe UI'; padding:{pad}px {round(9 * s)}px; }}
+    QMenu::item {{ font: {10 * s}pt 'Segoe UI'; padding:{pad}px {round(12 * s)}px; }}
+    QLabel#brand {{ font-weight:600; font-size:{12 * s}pt; }}
+    QLabel#subtitle, QLabel#section {{ color:{muted}; }}
+    QLabel#section {{ font-weight:600; font-size:{9 * s}pt; }}
+    QPushButton, QToolButton {{ background:{panel}; border:1px solid {border};
+        border-radius:5px; padding:{pad}px {round(9 * s)}px; }}
+    QPushButton:hover, QToolButton:hover {{ background:{hover}; border-color:{accent}; }}
+    QPushButton:checked, QToolButton:checked {{ background:{selected}; border-color:{accent}; }}
+    QPushButton:disabled, QToolButton:disabled {{ color:{muted}; background:{bg}; }}
+    QPushButton#primary, QToolButton#primary {{ background:{accent};
+        color:{"#15212D" if dark else "#FFFFFF"}; border-color:{accent}; }}
+    QPushButton:focus, QToolButton:focus, QLineEdit:focus,
+    QPlainTextEdit:focus {{ border:1px solid {accent}; }}
+    QPlainTextEdit, QTextEdit, QTextBrowser, QListWidget, QLineEdit, QComboBox,
+    QSpinBox, QDoubleSpinBox {{ background:{panel}; border:1px solid {border};
+        border-radius:5px; selection-background-color:{selected}; selection-color:{text}; }}
+    QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {{ padding:{pad}px; }}
+    QPlainTextEdit {{ padding:{round(9 * s)}px; }}
+    QListWidget {{ outline:none; padding:3px; }}
+    QListWidget::item {{ padding:{pad}px; margin-bottom:3px; border-radius:4px; }}
+    QListWidget::item:selected {{ background:{selected}; color:{text}; }}
+    QScrollArea, QGraphicsView {{ background:{bg}; border:1px solid {border}; }}
+    QSplitter::handle {{ background:{border}; width:5px; height:5px; }}
+    QSplitter::handle:hover {{ background:{accent}; }}
+    QMenuBar {{ background:{bg}; padding:2px; }}
+    QMenuBar::item:selected, QMenu::item:selected {{ background:{selected}; }}
+    QMenu {{ background:{panel}; border:1px solid {border}; padding:4px; }}
+    QMenu::item {{ padding:{pad}px {round(20 * s)}px; }}
+    QMenu::item:disabled {{ color:{muted}; }}
+    QMenu::separator {{ height:1px; background:{border}; margin:4px; }}
+    QTabWidget::pane {{ border:0; }}
+    QTabBar::tab {{ background:{bg}; padding:{pad}px {round(12 * s)}px; }}
+    QTabBar::tab:selected {{ background:{panel}; border-bottom:2px solid {accent}; }}
+    QStatusBar {{ color:{muted}; padding:2px 8px; }}
+    QProgressBar {{ border:0; background:{border}; height:5px; }}
+    QProgressBar::chunk {{ background:{accent}; }}
+    QToolTip {{ background:{panel}; color:{text}; border:1px solid {border}; padding:6px; }}
+    """
+
+
+STYLE = stylesheet()

@@ -13,21 +13,22 @@ from PySide6.QtWidgets import (
 )
 
 from chtec.ui.settings_dialog import SettingsDialog  # noqa: F401
+from chtec.ui.translations import tr
 
 
 class ProposalDialog(QDialog):
     def __init__(self, original: str, proposed: str, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Проверка правки модели")
+        self.setWindowTitle(tr("Проверка правки модели"))
         self.resize(960, 640)
         layout = QVBoxLayout(self)
         layout.addWidget(
-            QLabel("Сверьте изменения. Предложение можно отредактировать перед применением.")
+            QLabel(tr("Сверьте изменения. Предложение можно отредактировать перед применением."))
         )
         splitter = QSplitter(Qt.Orientation.Horizontal)
         for title, text, readonly in (
-            ("Исходный текст", original, True),
-            ("Предложение модели", proposed, False),
+            (tr("Исходный текст"), original, True),
+            (tr("Предложение модели"), proposed, False),
         ):
             from PySide6.QtWidgets import QWidget
 
@@ -45,9 +46,9 @@ class ProposalDialog(QDialog):
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Apply | QDialogButtonBox.StandardButton.Cancel
         )
-        buttons.button(QDialogButtonBox.StandardButton.Apply).setText("Применить правку")
+        buttons.button(QDialogButtonBox.StandardButton.Apply).setText(tr("Применить правку"))
         buttons.button(QDialogButtonBox.StandardButton.Apply).clicked.connect(self.accept)
-        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Оставить исходный")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText(tr("Оставить исходный"))
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
@@ -58,21 +59,26 @@ class ProposalDialog(QDialog):
 class ExportPreviewDialog(QDialog):
     def __init__(self, document, registry, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Предпросмотр перед сохранением")
+        self.setWindowTitle(tr("Предпросмотр перед сохранением"))
         self.resize(800, 700)
         layout = QVBoxLayout(self)
         layout.addWidget(
             QLabel(
-                "Проверьте весь текст. Разделители ниже показывают исходные страницы.\n"
-                "PDF/HTML сохраняют расположение размеченных блоков; TXT/DOCX — линейный текст.\n"
-                "Текст без привязки сохраняется отдельно. JSON сохраняет весь рабочий проект."
+                tr(
+                    (
+                        "Проверьте весь текст. Разделители ниже показывают исходные "
+                        "страницы.\nPDF/HTML сохраняют расположение размеченных блоков; "
+                        "TXT/DOCX — линейный текст.\nТекст без привязки сохраняется "
+                        "отдельно. JSON сохраняет весь рабочий проект."
+                    )
+                )
             )
         )
         text = QPlainTextEdit()
         text.setReadOnly(True)
         text.setPlainText(
             "\n\n".join(
-                f"── Страница {i + 1} · {page.source} ──\n\n{page.text}"
+                tr("── Страница {0} · {1} ──\n\n{2}", f"{i + 1}", f"{page.source}", f"{page.text}")
                 for i, page in enumerate(document.pages)
             )
         )
@@ -83,19 +89,19 @@ class ExportPreviewDialog(QDialog):
             spatial = QWidget()
             column = QVBoxLayout(spatial)
             pages = QComboBox()
-            pages.addItems([f"Страница {i + 1}" for i in range(len(document.pages))])
+            pages.addItems([tr("Страница {0}", f"{i + 1}") for i in range(len(document.pages))])
             canvas = LayoutCanvas(True)
             pages.currentIndexChanged.connect(lambda i: canvas.set_page(document.pages[i]))
             canvas.set_page(document.pages[0])
             column.addWidget(pages)
             column.addWidget(canvas)
-            tabs.addTab(spatial, "Расположение")
-            tabs.addTab(text, "Весь текст")
+            tabs.addTab(spatial, tr("Расположение"))
+            tabs.addTab(text, tr("Весь текст"))
             layout.addWidget(tabs)
         else:
             layout.addWidget(text)
         row = QHBoxLayout()
-        row.addWidget(QLabel("Сохранить как"))
+        row.addWidget(QLabel(tr("Сохранить как")))
         self.format = QComboBox()
         for extension, handler in registry.exporters.items():
             self.format.addItem(f"{extension.upper()[1:]} — {handler.label}", extension)
@@ -104,8 +110,12 @@ class ExportPreviewDialog(QDialog):
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
         )
-        buttons.button(QDialogButtonBox.StandardButton.Save).setText("Выбрать файл и сохранить…")
-        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Вернуться к редактированию")
+        buttons.button(QDialogButtonBox.StandardButton.Save).setText(
+            tr("Выбрать файл и сохранить…")
+        )
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText(
+            tr("Вернуться к редактированию")
+        )
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
