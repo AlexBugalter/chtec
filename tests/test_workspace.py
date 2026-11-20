@@ -35,6 +35,78 @@ def test_workspace_has_menus_shared_sidebar_and_resizable_canvases(window):
     assert window.page_list.isVisible()
 
 
+def test_project_menu_roundtrip(window, tmp_path, monkeypatch):
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QFileDialog, QMessageBox
+
+    def wait():
+        for _ in range(500):
+            QApplication.processEvents()
+            if window.worker is None:
+                return
+            QTest.qWait(10)
+        pytest.fail("Project command did not finish")
+
+    initial = tmp_path / "original.json"
+    copy = tmp_path / "copy.json"
+    target = iter([initial, copy])
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a: (str(next(target)), ""))
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *a: (str(initial), ""))
+    window.add_pages([page()])
+    window.document.title = "Метрическая книга"
+    window.editor.setPlainText("Первая запись")
+    window.actions["save_project"].trigger()
+    wait()
+    assert window.project_path == initial and not window.dirty
+    window.editor.setPlainText("Исправленный текст")
+    window.actions["save_project"].trigger()
+    wait()
+    assert "Исправленный текст" in initial.read_text(encoding="utf-8")
+    window.actions["save_project_as"].trigger()
+    wait()
+    assert window.project_path == copy
+    window.actions["close_project"].trigger()
+    assert not window.document.pages and window.project_path is None
+    window.actions["open_project"].trigger()
+    wait()
+    assert window.project_path == initial and not window.dirty
+    assert window.document.title == "Метрическая книга"
+    assert window.editor.toPlainText() == "Исправленный текст"
+    window.editor.setPlainText("Несохранённая правка")
+    monkeypatch.setattr(QMessageBox, "question", lambda *a: QMessageBox.StandardButton.Cancel)
+    window.actions["close_project"].trigger()
+    assert window.dirty and window.editor.toPlainText() == "Несохранённая правка"
+    monkeypatch.setattr(QMessageBox, "question", lambda *a: QMessageBox.StandardButton.Save)
+    window.actions["close_project"].trigger()
+    wait()
+    QTest.qWait(10)
+    assert not window.document.pages
+    assert "Несохранённая правка" in initial.read_text(encoding="utf-8")
+
+
+def test_open_invalid_project_keeps_current_document(window, tmp_path, monkeypatch):
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QFileDialog, QMessageBox
+
+    path = tmp_path / "invalid.json"
+    path.write_text("{", encoding="utf-8")
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *a: (str(path), ""))
+    monkeypatch.setattr(QMessageBox, "question", lambda *a: QMessageBox.StandardButton.Discard)
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a: None)
+    original = page()
+    window.add_pages([original])
+    window.editor.setPlainText("Несохранённый оригинал")
+    window.actions["open_project"].trigger()
+    for _ in range(500):
+        QApplication.processEvents()
+        if window.worker is None:
+            break
+        QTest.qWait(10)
+    assert window.worker is None
+    assert window.current_page is original and window.dirty
+    assert window.editor.toPlainText() == "Несохранённый оригинал"
+
+
 def test_appearance_change_preserves_unsaved_document_and_restores_panels(window):
     p = page()
     window.add_pages([p])

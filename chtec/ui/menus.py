@@ -41,17 +41,21 @@ def build_menus(w):
         button=w.new_button,
     )
     action(
-        file, "open", "Добавить", w.open_files, QKeySequence.StandardKey.Open, button=w.open_button
+        file, "open_project", "Открыть проект…", w.open_project, QKeySequence.StandardKey.Open
     )
+    action(file, "open", "Добавить", w.open_files, button=w.open_button)
+    file.addSeparator()
+    action(file, "save_project", "Сохранить проект", w.save_project, QKeySequence.StandardKey.Save)
+    action(file, "save_project_as", "Сохранить проект как…", w.save_project_as, "Ctrl+Shift+S")
     action(
         file,
         "save",
         "Предпросмотр и сохранение",
         w.export_document,
-        QKeySequence.StandardKey.Save,
         button=w.export_button,
     )
     file.addSeparator()
+    action(file, "close_project", "Закрыть проект", w.close_project, QKeySequence.StandardKey.Close)
     action(file, "exit", "Выход", w.close, "Alt+F4")
     edit = menu("edit", "Правка")
     action(edit, "undo", "Отменить правку", w.undo_text, "Ctrl+Z", button=w.undo_button)
@@ -177,8 +181,8 @@ def build_menus(w):
             tr(
                 (
                     "Колесо — масштаб; перетаскивание — перемещение. Правка зон: углы "
-                    "меняют размер, Esc отменяет жест. Ctrl+O — добавить, Ctrl+S — "
-                    "сохранить, Ctrl+0 — подогнать."
+                    "меняют размер, Esc отменяет жест. Ctrl+O — открыть проект, Ctrl+S — "
+                    "сохранить проект, Ctrl+0 — подогнать."
                 )
             ),
         ),
@@ -216,6 +220,10 @@ def sync_actions(w):
     for key, button in w.command_buttons.items():
         w.actions[key].setEnabled(button.isEnabled())
     busy = w.worker is not None
+    w.actions["open_project"].setEnabled(not busy)
+    w.actions["close_project"].setEnabled(not busy and bool(w.document.pages or w.project_path))
+    for key in ("save_project", "save_project_as"):
+        w.actions[key].setEnabled(not busy and bool(w.document.pages))
     page = w.current_page
     w.actions["redo"].setEnabled(not busy and bool(page and getattr(page, "_future", [])))
     for key in ("save_template", "open_template", "edit_zone", "delete_zone"):

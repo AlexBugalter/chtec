@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 from chtec import __version__
 from chtec.backends.catalog import ModelEntry, catalog
 from chtec.domain import MAX_PAGES, AppError, Document, validate_image_budget
+from chtec.formats.importers import ProjectImporter
 from chtec.layout_recognition import LayoutRecognitionService
 from chtec.llm import LocalModel, LocalSettings
 from chtec.providers import PROVIDERS, CloudSettings, create_model, destination
@@ -49,6 +50,8 @@ class MainWindow(WorkspaceControls, QMainWindow):
         self.model_catalogs = {}
         self.binding_area = None
         self.document = Document()
+        self.project_path = None
+        self._after_task = None
         self.dirty = False
         self.worker = None
         self.close_after_task = False
@@ -668,9 +671,12 @@ class MainWindow(WorkspaceControls, QMainWindow):
             tr("Завершено за {0} с", f"{self.task_elapsed.elapsed() / 1000:.1f}")
         )
         self.refresh_controls()
+        continuation, self._after_task = self._after_task, None
         if self.close_after_task:
             self.close_after_task = False
             QTimer.singleShot(0, self.close)
+        elif continuation:
+            QTimer.singleShot(0, continuation)
 
     def update_task_time(self):
         self.task_time.setText(tr("Ожидание: {0} с", f"{self.task_elapsed.elapsed() // 1000}"))
@@ -724,6 +730,37 @@ class MainWindow(WorkspaceControls, QMainWindow):
             self.statusBar().showMessage(tr("Добавлено страниц: {0}.", f"{len(pages)}"))
         except AppError as exc:
             self.show_error(str(exc))
+
+    def open_project(self):
+        if self.worker:
+            return
+        filename, _ = QFileDialog.getOpenFileName(
+            self, tr("Открыть проект…"), str(self.project_path or ""), tr("Проект Чтец (*.json)")
+        )
+        if filename:
+            path = Path(filename)
+            self._leave_project(lambda: self._load_project(path))
+
+    def _load_project(self, path):
+        if self.worker:
+            return
+
+        def loaded(document):
+            if not self.close_after_task:
+                self._replace_project(document, path)
+                self.statusBar().showMessage(tr("Проект открыт: {0}", str(path)))
+
+        self.run_task(lambda _: ProjectImporter().read_document(path), loaded)
+
+    def _replace_project(self, document, path=None):
+        self.dataset_controller.flush()
+        self.document = Document(title=document.title)
+        self.project_path = path
+        self.page_list.clear()
+        if document.pages:
+            self.add_pages(document.pages)
+        self.dirty = False
+        self.select_page(self.page_list.currentRow())
 
     def language_model(self):
         settings = self.model_settings
@@ -1028,6 +1065,8 @@ class MainWindow(WorkspaceControls, QMainWindow):
             return
 
         def proposal(result):
+            if self.close_after_task or self.worker.cancel.is_set():
+                return
             dialog = ProposalDialog(original, result, self)
             if dialog.exec() == QDialog.DialogCode.Accepted:
                 if block_id:
@@ -1062,8 +1101,32 @@ class MainWindow(WorkspaceControls, QMainWindow):
             tr("Рукопись{0}", f"{extension}"),
             f"{extension[1:].upper()} (*{extension})",
         )
-        if not path:
+        if path:
+            self._save_document(path, extension)
+
+    def save_project(self):
+        self._save_project()
+
+    def save_project_as(self):
+        self._save_project(save_as=True)
+
+    def _save_project(self, save_as=False, after_save=None):
+        if self.worker or not self.document.pages:
             return
+        path = self.project_path
+        if path is None or save_as:
+            filename, _ = QFileDialog.getSaveFileName(
+                self,
+                tr("Сохранить проект как…"),
+                str(path or tr("Рукопись{0}", ".json")),
+                tr("Проект Чтец (*.json)"),
+            )
+            if not filename:
+                return
+            path = Path(filename)
+        self._save_document(path, ".json", after_save)
+
+    def _save_document(self, path, extension, after_save=None):
         path = Path(path)
         if path.suffix.lower() != extension:
             path = path.with_suffix(extension)
@@ -1084,7 +1147,9 @@ class MainWindow(WorkspaceControls, QMainWindow):
         def saved(_):
             # Only a project contains source images and revision history.
             if extension == ".json":
+                self.project_path = path
                 self.dirty = False
+                self._after_task = after_save
             self.statusBar().showMessage(tr("Сохранено: {0}", f"{path}"))
 
         self.run_task(lambda _: self.registry.export_file(snapshot, path), saved)
@@ -1109,13 +1174,32 @@ class MainWindow(WorkspaceControls, QMainWindow):
         )
 
     def new_document(self):
-        if self.worker or not self.confirm_discard():
+        self.close_project()
+
+    def close_project(self):
+        self._leave_project(lambda: self._replace_project(Document()))
+
+    def _leave_project(self, continuation):
+        if self.worker:
             return
-        self.document = Document()
-        self.page_list.clear()
-        self.image.clear_image()
-        self.dirty = False
-        self.refresh_controls()
+        if not self.dirty:
+            continuation()
+            return
+        buttons = QMessageBox.StandardButton
+        options = buttons.Discard | buttons.Cancel
+        if self.document.pages:
+            options |= buttons.Save
+        choice = QMessageBox.question(
+            self,
+            tr("Есть несохраненный проект"),
+            tr("Сохранить изменения в текущем проекте?"),
+            options,
+            buttons.Save if self.document.pages else buttons.Cancel,
+        )
+        if choice == buttons.Save:
+            self._save_project(after_save=continuation)
+        elif choice == buttons.Discard:
+            continuation()
 
     def dragEnterEvent(self, event):
         if not self.worker and event.mimeData().hasUrls():

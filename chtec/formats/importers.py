@@ -8,10 +8,12 @@ import pymupdf
 from PIL import Image, ImageOps
 
 from chtec.domain import (
+    MAX_FILE_BYTES,
     MAX_IMAGE_SIDE,
     MAX_PAGES,
     MAX_PIXELS,
     AppError,
+    Document,
     Page,
     Revision,
     validate_image_budget,
@@ -118,7 +120,12 @@ class ProjectImporter(Importer):
     label = "Проект Чтец"
 
     def read(self, path: Path) -> list[Page]:
+        return self.read_document(path).pages
+
+    def read_document(self, path: Path) -> Document:
         try:
+            if path.stat().st_size > MAX_FILE_BYTES:
+                raise AppError("Файл превышает лимит 100 MiB. Разделите его на части.")
             data = json.loads(path.read_text(encoding="utf-8"))
             if data.get("format") != "chtec" or data.get("version") not in (1, 2):
                 raise ValueError("Неизвестный формат проекта")
@@ -174,6 +181,9 @@ class ProjectImporter(Importer):
                     Page(image_png, source, number, text, history, source_path, blocks, unplaced)
                 )
                 validate_image_budget(pages)
-            return pages
+            title = data.get("title", Document.title)
+            if not isinstance(title, str):
+                raise ValueError("Неверное название проекта")
+            return Document(pages, title)
         except (KeyError, ValueError, TypeError, AttributeError, OSError) as exc:
             raise AppError(f"Не удалось прочитать проект: {exc}") from exc
