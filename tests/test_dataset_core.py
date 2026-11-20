@@ -49,6 +49,67 @@ def test_capture_is_draft_persistent_and_verified_is_not_approval(tmp_path):
     assert service.capture(p, p.blocks[0])["id"] == sample["id"]
 
 
+def test_unchanged_page_sync_does_not_recrop(tmp_path, monkeypatch):
+    from chtec.regions import RegionExtractor
+
+    service = DatasetService(tmp_path / 'collection')
+    p = page()
+    p.blocks = [replace(p.blocks[0], id=str(i)) for i in range(10)]
+    service.sync_page(p)
+    def unexpected(*args, **kwargs):
+        raise AssertionError('unchanged zone was recropped')
+    monkeypatch.setattr(RegionExtractor, 'extract_block', unexpected)
+    connect = service.store.connection
+    connections = []
+
+    def counted():
+        connections.append(None)
+        return connect()
+
+    monkeypatch.setattr(service.store, "connection", counted)
+    assert len(service.sync_page(p)) == 10
+    assert len(connections) == 1
+
+
+def test_bulk_approval_is_atomic_when_one_example_is_uncertain(tmp_path):
+    service = DatasetService(tmp_path / 'collection')
+    a = service.capture(page(), page().blocks[0])
+    p = page('black', '[неразборчиво]', 'b')
+    b = service.capture(p, p.blocks[0])
+    with pytest.raises(AppError):
+        service.approve_many([{'id':a['id'],'fingerprint':a['fingerprint']},
+                              {'id':b['id'],'fingerprint':b['fingerprint']}])
+    assert all(s['status']=='draft' for s in service.list_samples())
+
+
+def test_bulk_approval_valid_samples_and_conflict_are_checked(tmp_path):
+    service = DatasetService(tmp_path / 'collection')
+    first = page('white', 'Текст', 'a')
+    second = page('black', 'Другой текст', 'b')
+    a = service.capture(first, first.blocks[0])
+    b = service.capture(second, second.blocks[0])
+    result = service.approve_many([
+        {'id': a['id'], 'fingerprint': a['fingerprint']},
+        {'id': b['id'], 'fingerprint': b['fingerprint']},
+    ])
+    assert len(result) == 2
+    assert all(s['status'] == 'approved' for s in service.list_samples())
+
+
+def test_bulk_rejects_conflicting_drafts_without_partial_approval(tmp_path):
+    service = DatasetService(tmp_path / 'collection')
+    first = page('white', 'Первый', 'a')
+    second = page('white', 'Второй', 'b')
+    a = service.capture(first, first.blocks[0])
+    b = service.capture(second, second.blocks[0])
+    with pytest.raises(AppError, match='Конфликт'):
+        service.approve_many([
+            {'id': a['id'], 'fingerprint': a['fingerprint']},
+            {'id': b['id'], 'fingerprint': b['fingerprint']},
+        ])
+    assert all(s['status'] == 'draft' for s in service.list_samples())
+
+
 def test_edit_undo_delete_invalidate_and_preserve_immutable_versions(tmp_path):
     service = DatasetService(tmp_path)
     p = page()

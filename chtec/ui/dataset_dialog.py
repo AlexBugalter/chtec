@@ -5,6 +5,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -41,7 +42,7 @@ class DatasetManagerDialog(QDialog):
         self.setWindowTitle(tr("Датасет для обучения"))
         self.setMinimumSize(650, 450)
         self.resize(1100, 760)
-        self._samples = []
+        self._samples = None
         self.current_sample = None
         self._busy = False
         self._loading = False
@@ -55,6 +56,9 @@ class DatasetManagerDialog(QDialog):
         controls.addWidget(self.status_filter)
         self.refresh_button = QPushButton(tr("Обновить"))
         controls.addWidget(self.refresh_button)
+        self.select_all_button = QPushButton(tr("Выбрать все"))
+        self.select_all_button.setToolTip(tr("Выбрать все видимые примеры с учётом фильтра."))
+        controls.addWidget(self.select_all_button)
         controls.addStretch()
         self.counters = QLabel()
         self.counters.setWordWrap(True)
@@ -62,6 +66,7 @@ class DatasetManagerDialog(QDialog):
         outer.addWidget(self.counters)
         split = QSplitter()
         self.samples_list = QListWidget()
+        self.samples_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         split.addWidget(self.samples_list)
         review = QWidget()
         review_layout = QVBoxLayout(review)
@@ -89,7 +94,8 @@ class DatasetManagerDialog(QDialog):
         self.review_note = QLabel(
             tr(
                 "Проверьте изображение и точный текст. После правки сначала сохраните пример, "
-                "затем подтвердите его отдельным нажатием."
+                "затем подтвердите его отдельным нажатием. Массово подтверждайте только "
+                "проверенные примеры."
             )
         )
         self.review_note.setWordWrap(True)
@@ -97,8 +103,13 @@ class DatasetManagerDialog(QDialog):
         actions = QHBoxLayout()
         self.save_button = QPushButton(tr("Сохранить правки"))
         self.approve_button = QPushButton(tr("Подтвердить текст для обучения"))
+        self.approve_selected_button = QPushButton(tr("Подтвердить выбранные"))
+        self.approve_selected_button.setToolTip(
+            tr("Подтвердить выбранные проверенные тексты; исключённые примеры пропускаются.")
+        )
         self.exclude_button = QPushButton(tr("Исключить пример"))
-        for button in (self.save_button, self.approve_button, self.exclude_button):
+        for button in (self.save_button, self.approve_button, self.approve_selected_button,
+                       self.exclude_button):
             actions.addWidget(button)
         review_layout.addLayout(actions)
         split.addWidget(review)
@@ -120,19 +131,36 @@ class DatasetManagerDialog(QDialog):
         outer.addLayout(footer)
         self.status_filter.currentIndexChanged.connect(self._populate_list)
         self.samples_list.currentItemChanged.connect(self._selection_changed)
+        self.samples_list.itemSelectionChanged.connect(self._update_actions)
         self.text.textChanged.connect(self._update_actions)
         self.group.textChanged.connect(self._update_actions)
         self.uncertain.toggled.connect(self._update_actions)
         self.save_button.clicked.connect(self._save)
         self.approve_button.clicked.connect(self._approve)
+        self.approve_selected_button.clicked.connect(self._approve_selected)
+        self.select_all_button.clicked.connect(self.samples_list.selectAll)
         self.exclude_button.clicked.connect(self._exclude)
         self.refresh_button.clicked.connect(lambda: self.action_requested.emit("refresh", None))
         self.export_button.clicked.connect(self._export)
         self.set_samples(samples)
 
     def set_samples(self, samples):
-        self._samples = [dict(sample) for sample in samples]
+        updated = [dict(sample) for sample in samples]
+        if updated == self._samples:
+            return
+        current = self.current_sample
+        draft = None
+        if current and self._dirty():
+            draft = (self.text.toPlainText(), self.group.text(), self.uncertain.isChecked())
+        self._samples = updated
         self._populate_list()
+        if draft is not None and self.current_sample and (
+            self.current_sample["id"], self.current_sample["fingerprint"]
+        ) == (current["id"], current["fingerprint"]):
+            text, group, uncertain = draft
+            self.text.setPlainText(text)
+            self.group.setText(group)
+            self.uncertain.setChecked(uncertain)
 
     def _populate_list(self):
         selected = self.current_sample.get("id") if self.current_sample else None
@@ -233,6 +261,10 @@ class DatasetManagerDialog(QDialog):
         )
         self.exclude_button.setEnabled(editable)
         self.refresh_button.setEnabled(not self._busy)
+        self.select_all_button.setEnabled(not self._busy and self.samples_list.count() > 0)
+        self.approve_selected_button.setEnabled(
+            not self._busy and not self._dirty() and bool(self.samples_list.selectedItems())
+        )
         self.export_button.setEnabled(not self._busy)
         self.samples_list.setEnabled(not self._busy)
         self.status_filter.setEnabled(not self._busy)
@@ -273,6 +305,20 @@ class DatasetManagerDialog(QDialog):
     def _exclude(self):
         if self.exclude_button.isEnabled():
             self.action_requested.emit("exclude", {"id": self.current_sample["id"]})
+
+    def _approve_selected(self):
+        if not self.approve_selected_button.isEnabled():
+            return
+        samples = [
+            item.data(Qt.ItemDataRole.UserRole) for item in self.samples_list.selectedItems()
+        ]
+        candidates = [s for s in samples if s.get('status') not in ('excluded', 'approved')]
+        if not candidates:
+            self.show_error(tr("Нет выбранных примеров, ожидающих подтверждения."))
+            return
+        self.action_requested.emit('approve_many', [
+            {'id': s['id'], 'fingerprint': s['fingerprint']} for s in candidates
+        ])
 
     def _export(self):
         target, _ = QFileDialog.getSaveFileName(self, tr("Новая папка экспорта"))

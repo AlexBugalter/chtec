@@ -134,3 +134,34 @@ def test_switching_pages_before_debounce_preserves_edited_page(tmp_path):
     wait_collection(app, c)
     w.deleteLater()
     app.processEvents()
+
+
+def test_bulk_approval_reconciles_pending_document_changes(tmp_path):
+    from chtec.layout import TextBlock
+    from tests.test_layout import page
+
+    app = QApplication.instance() or QApplication([])
+    w = MainWindow(default_registry(), LocalSettings())
+    c = w.dataset_controller
+    errors = []
+    c.error = errors.append
+    c.persist(str(tmp_path / 'collection'), True, 'book')
+    p = page()
+    p.replace_blocks([
+        TextBlock('a', 'Первый', (.1, .1, .4, .4)),
+        TextBlock('b', 'Второй', (.5, .5, .9, .9)),
+    ])
+    w.add_pages([p])
+    c.flush()
+    wait_collection(app, c)
+    before = c.service().list_samples()
+    p.edit_block('a', 'Изменённый текст')
+    c.action('approve_many', [{'id': s['id'], 'fingerprint': s['fingerprint']} for s in before])
+    wait_collection(app, c)
+    assert errors
+    assert not any(s['status'] == 'approved' for s in c.service().list_samples())
+    w.dirty = False
+    w.close()
+    wait_collection(app, c)
+    w.deleteLater()
+    app.processEvents()

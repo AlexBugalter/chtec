@@ -14,6 +14,7 @@ from pathlib import Path
 
 from PIL import Image
 
+from chtec.domain import MAX_FILE_BYTES
 from chtec.domain_errors import AppError
 from chtec.regions import RegionExtractor
 
@@ -134,11 +135,48 @@ class DatasetService:
         self.store = DatasetStore(folder)
         self.folder = self.store.folder
 
-    def capture(self, page, block, group=""):
+    @staticmethod
+    def _source_marker(page):
+        path = Path(page.source_path) if page.source_path else None
+        if path is None or not path.is_file():
+            return 'saved-copy'
+        try:
+            if path.stat().st_size > MAX_FILE_BYTES:
+                return 'too-large'
+            h = sha256()
+            with path.open('rb') as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+                    h.update(chunk)
+            return fingerprint([str(path.resolve()), h.hexdigest(), page.number])
+        except OSError:
+            return 'unavailable'
+
+    @staticmethod
+    def _capture_identity(page_hash, block, marker):
+        geometry = {"rect": block.rect, "quad": block.quad, "angle": block.angle}
+        return geometry, fingerprint([page_hash, block.id, geometry, block.text, marker])
+
+    @staticmethod
+    def _can_reuse(sample, input_fp):
+        return (
+            sample
+            and sample.get("input_fingerprint") == input_fp
+            and not sample.get("deleted")
+            and not sample.get("source_invalid")
+            and sample["image_path"].is_file()
+        )
+
+    def capture(self, page, block, group="", *, _source_marker=None, _page_hash=None):
         block = block.validated()
         if not block.text.strip():
             raise AppError("Пустая зона не является примером для обучения.")
-        page_hash = digest(page.image_png)
+        page_hash = _page_hash or digest(page.image_png)
+        marker = _source_marker if _source_marker is not None else self._source_marker(page)
+        geometry, input_fp = self._capture_identity(page_hash, block, marker)
+        with self.store.connection() as db:
+            previous = self.store.latest(db, page_hash, block.id)
+            if self._can_reuse(previous, input_fp):
+                return previous
         with Image.open(io.BytesIO(page.image_png)) as image:
             dimensions = list(image.size)
         crop_block = block
@@ -160,7 +198,6 @@ class DatasetService:
                     self.store.save(db, previous)
             raise
         image_hash = self.store.blob(region.image_png)
-        geometry = {"rect": block.rect, "quad": block.quad, "angle": block.angle}
         source_fp = fingerprint([page_hash, block.id, geometry, block.text, image_hash])
         with self.store.connection() as db:
             previous = self.store.latest(db, page_hash, block.id)
@@ -170,6 +207,8 @@ class DatasetService:
                 and not previous.get("deleted")
                 and not previous.get("source_invalid")
             ):
+                previous['input_fingerprint'] = input_fp
+                self.store.save(db, previous)
                 return previous
             sample = {
                 "id": uuid.uuid4().hex,
@@ -182,6 +221,7 @@ class DatasetService:
                 "page_size": dimensions,
                 "page_number": page.number,
                 "source_fingerprint": source_fp,
+                "input_fingerprint": input_fp,
                 "source_model": None,
                 "source_ocr": None,
                 "used_original": region.used_original,
@@ -206,24 +246,36 @@ class DatasetService:
 
     def sync_page(self, page, group="", capture_new=True):
         page_hash = digest(page.image_png)
+        marker = self._source_marker(page)
         live = {b.id for b in page.blocks if b.text.strip()}
         with self.store.connection() as db:
             rows = db.execute(
-                "SELECT sample_id, block_id FROM current WHERE page_hash=?", (page_hash,)
+                "SELECT r.payload FROM current c JOIN revisions r ON r.id=c.sample_id "
+                "WHERE c.page_hash=?", (page_hash,)
             ).fetchall()
-            for sample_id, block_id in rows:
-                if block_id not in live:
-                    sample = self.store.get(db, sample_id)
+            existing = {}
+            for row in rows:
+                sample = self.store.decode(row)
+                existing[sample["block_id"]] = sample
+                if sample["block_id"] not in live and not sample.get("deleted"):
                     sample["deleted"] = True
                     if sample["status"] != "excluded":
                         sample["status"] = "stale"
                     self.store.save(db, sample)
-        existing = {block_id for _, block_id in rows}
-        return [
-            self.capture(page, block, group)
-            for block in page.blocks
-            if block.text.strip() and (capture_new or block.id in existing)
-        ]
+        result = []
+        for block in page.blocks:
+            previous = existing.get(block.id)
+            if block.id not in live or (not capture_new and previous is None):
+                continue
+            block = block.validated()
+            _, input_fp = self._capture_identity(page_hash, block, marker)
+            if self._can_reuse(previous, input_fp):
+                result.append(previous)
+            else:
+                result.append(self.capture(
+                    page, block, group, _source_marker=marker, _page_hash=page_hash
+                ))
+        return result
 
     def get(self, sample_id):
         with self.store.connection() as db:
@@ -250,33 +302,51 @@ class DatasetService:
         return sample
 
     def approve(self, sample_id, expected_fingerprint):
+        return self.approve_many([{'id': sample_id, 'fingerprint': expected_fingerprint}])[0]
+
+    def approve_many(self, entries):
+        if not entries:
+            raise AppError("Выберите примеры для подтверждения.")
         with self.store.connection() as db:
-            sample = self._checked(db, sample_id, expected_fingerprint)
-            validate_text(sample["text"], sample["uncertain"])
+            # Serialize the conflict check and writes across separate DatasetService instances.
+            db.execute("BEGIN IMMEDIATE")
+            selected = [self._checked(db, e['id'], e['fingerprint']) for e in entries]
+            if len({s['id'] for s in selected}) != len(selected):
+                raise AppError("Выбран повторяющийся пример.")
+            for sample in selected:
+                if sample['status'] == 'excluded' and len(selected) > 1:
+                    raise AppError("Исключённые примеры нельзя подтвердить массово.")
+                validate_text(sample["text"], sample["uncertain"])
+            hashes = {}
             for row in db.execute(
                 "SELECT r.payload FROM revisions r JOIN current c ON c.sample_id=r.id"
             ):
                 other = self.store.decode(row)
-                if (
-                    other["id"] != sample_id
-                    and other["status"] == "approved"
-                    and other["image_hash"] == sample["image_hash"]
-                    and other["text"] != sample["text"]
-                ):
+                if other['status'] == 'approved':
+                    hashes.setdefault(other['image_hash'], set()).add(other['text'])
+            verified_images = set()
+            for sample in selected:
+                hashes.setdefault(sample['image_hash'], set()).add(sample['text'])
+                if len(hashes[sample['image_hash']]) > 1:
                     raise AppError(
                         "Конфликт транскрипций одного изображения. Исключите неверный вариант."
                     )
-            try:
-                if digest(sample["image_path"].read_bytes()) != sample["image_hash"]:
-                    raise AppError("Контрольная сумма изображения не совпадает.")
-                with Image.open(sample["image_path"]) as image:
-                    image.verify()
-            except (OSError, ValueError) as exc:
-                raise AppError("Изображение примера повреждено или недоступно.") from exc
-            sample["status"] = "approved"
-            sample["approved_at"] = datetime.now(timezone.utc).isoformat()
-            self.store.save(db, sample)
-            return sample
+                if sample["image_hash"] in verified_images:
+                    continue
+                try:
+                    data = sample["image_path"].read_bytes()
+                    if digest(data) != sample["image_hash"]:
+                        raise AppError("Контрольная сумма изображения не совпадает.")
+                    with Image.open(io.BytesIO(data)) as image:
+                        image.verify()
+                except (OSError, ValueError) as exc:
+                    raise AppError("Изображение примера повреждено или недоступно.") from exc
+                verified_images.add(sample["image_hash"])
+            for sample in selected:
+                sample["status"] = "approved"
+                sample["approved_at"] = datetime.now(timezone.utc).isoformat()
+                self.store.save(db, sample)
+            return selected
 
     def revise(self, sample_id, expected_fingerprint, text, group="", uncertain=False):
         if not isinstance(text, str) or not text.strip():

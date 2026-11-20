@@ -78,7 +78,6 @@ class DatasetController(QObject):
         self.queue = []
         self.dialog = None
         self.closing = False
-        self.last_signature = None
         self.observed = {}
         self.pending = {}
         self.failed_sync = []
@@ -119,7 +118,6 @@ class DatasetController(QObject):
     def persist(self, folder, enabled, group):
         try:
             self.preferences.save(folder, enabled, group)
-            self.last_signature = None
             self.observed.clear()
             return True
         except AppError as exc:
@@ -258,7 +256,6 @@ class DatasetController(QObject):
         worker.start()
 
     def failed(self, message):
-        self.last_signature = None
         self.observed.clear()
         if self.active_job and self.active_job[0].startswith("sync:"):
             self.failed_sync.append(self.active_job)
@@ -266,7 +263,6 @@ class DatasetController(QObject):
         if self.closing:
             self.closing = False
             self.window._dataset_close_approved = False
-            self.queue.clear()
         self.error(message)
 
     def finished(self):
@@ -337,6 +333,10 @@ class DatasetController(QObject):
         self.queue[0:0] = self.failed_sync
         self.failed_sync = []
         self.flush()
+        if kind == "refresh":
+            folder = self.preferences.folder
+            self.enqueue("refresh", lambda: self.service(folder).list_samples(), self.updated)
+            return
         pages = [self.snapshot(p) for p in self.window.document.pages]
         folder, group, enabled = self.preferences.folder, self.preferences.group, self.enabled
 
@@ -355,6 +355,8 @@ class DatasetController(QObject):
                 )
             elif kind == "approve":
                 service.approve(payload["id"], payload["fingerprint"])
+            elif kind == "approve_many":
+                service.approve_many(payload)
             elif kind == "exclude":
                 service.exclude(payload["id"])
             elif kind == "export":

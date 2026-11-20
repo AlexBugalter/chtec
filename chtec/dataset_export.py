@@ -69,9 +69,10 @@ class DatasetExporter:
 
         def find(key):
             parents.setdefault(key, key)
-            if parents[key] != key:
-                parents[key] = find(parents[key])
-            return parents[key]
+            while parents[key] != key:
+                parents[key] = parents[parents[key]]
+                key = parents[key]
+            return key
 
         def union(a, b):
             a, b = find(a), find(b)
@@ -161,8 +162,9 @@ class DatasetExporter:
             jsonl("data.jsonl", rows)
             jsonl("messages.jsonl", messages)
             for part, ids in splits.items():
-                jsonl(part + ".jsonl", [r for r in rows if r["id"] in ids])
-                jsonl(part + "_messages.jsonl", [r for r in messages if r["id"] in ids])
+                members = set(ids)
+                jsonl(part + ".jsonl", [r for r in rows if r["id"] in members])
+                jsonl(part + "_messages.jsonl", [r for r in messages if r["id"] in members])
             for name, value in [("manifest.json", manifest), ("report.json", report)]:
                 (stage / name).write_text(
                     json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8"

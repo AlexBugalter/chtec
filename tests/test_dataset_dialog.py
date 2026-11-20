@@ -45,6 +45,20 @@ def test_preview_and_explicit_approval(dialog):
     assert events == [("approve", {"id": "one", "fingerprint": "v1"})]
 
 
+def test_select_all_requests_bulk_approval(dialog):
+    widget, sample = dialog
+    other = dict(sample, id='two', fingerprint='v2')
+    widget.set_samples([sample, other])
+    events = []
+    widget.action_requested.connect(lambda action, payload: events.append((action, payload)))
+    widget.select_all_button.click()
+    assert len(widget.samples_list.selectedItems()) == 2
+    widget.approve_selected_button.click()
+    assert events == [('approve_many', [
+        {'id': 'one', 'fingerprint': 'v1'}, {'id': 'two', 'fingerprint': 'v2'},
+    ])]
+
+
 def test_dirty_text_requires_save_then_fresh_review(dialog):
     widget, sample = dialog
     events = []
@@ -78,6 +92,16 @@ def test_refresh_selection_filters_and_busy(dialog):
     assert not widget.refresh_button.isEnabled()
     widget.set_busy(False)
     assert widget.approve_button.isEnabled()
+
+
+def test_background_refresh_preserves_uncommitted_example_edit(dialog):
+    widget, sample = dialog
+    widget.text.setPlainText("Моя несохранённая правка")
+    widget.set_busy(True)
+    widget.set_samples([sample])
+    widget.set_busy(False)
+    assert widget.text.toPlainText() == "Моя несохранённая правка"
+    assert widget.save_button.isEnabled()
 
 
 def test_invalid_image_uncertainty_and_empty_text_block_approval(dialog):
