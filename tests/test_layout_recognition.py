@@ -1,8 +1,10 @@
 import io
 import json
 
+import pytest
 from PIL import Image
 
+from chtec.domain import AppError
 from chtec.layout import TextBlock
 from chtec.layout_recognition import LayoutRecognitionService
 from tests.test_layout import page
@@ -42,3 +44,34 @@ def test_refine_rotates_crop_but_keeps_source_block_geometry():
 
     assert LayoutRecognitionService(Model()).refine(p, block) == "Дмитрий"
     assert p.blocks == [block]
+
+
+@pytest.mark.parametrize(('answer', 'expected'), [
+    (
+        '```json\n[{"bbox":"(58,289),(965,710)","category":"handwritten",'
+        '"text":"МЕТРИЧЕСКОЙ КНИГИ"}]\n```',
+        'МЕТРИЧЕСКОЙ КНИГИ',
+    ),
+    ('{"regions":[{"text":"Первая"},{"text":"Вторая"}]}', 'Первая\nВторая'),
+    ('{"text":"Строка\\nдругая"}', 'Строка\nдругая'),
+    ('Обычный текст\nв две строки', 'Обычный текст\nв две строки'),
+    ('[неразборчиво]', '[неразборчиво]'),
+])
+def test_refine_extracts_transcription_from_structured_response(answer, expected):
+    class Model:
+        def recognize(self, fragment, instruction):
+            return answer
+
+    block = TextBlock('a', '', (0.1, 0.1, 0.5, 0.5))
+    result = LayoutRecognitionService(Model()).refine(page(), block)
+    assert result == expected
+
+
+@pytest.mark.parametrize('answer', ['```json\n{"bbox": [1, 2]}\n```', '```json\n{"text":\n```'])
+def test_refine_rejects_invalid_structured_response(answer):
+    class Model:
+        def recognize(self, fragment, instruction):
+            return answer
+
+    with pytest.raises(AppError):
+        LayoutRecognitionService(Model()).refine(page(), TextBlock('a', '', (0.1, 0.1, 0.5, 0.5)))

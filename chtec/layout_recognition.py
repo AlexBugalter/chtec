@@ -1,5 +1,6 @@
 import io
 import json
+import re
 from dataclasses import replace
 
 from PIL import Image, ImageDraw
@@ -8,6 +9,46 @@ from chtec.domain import AppError, Page
 from chtec.layout import parse_layout
 from chtec.regions import RegionExtractor
 from chtec.zone_detection import check_cancel
+
+
+def refinement_text(answer):
+    """Extract OCR text from common structured replies without changing plain text."""
+    if not isinstance(answer, str):
+        raise AppError("Модель вернула ответ в неподдерживаемом формате.")
+    candidate = answer.strip()
+    fenced = candidate.startswith("```")
+    if fenced:
+        match = re.fullmatch(r"```(?:json)?\s*\n(.*?)\n?```\s*", candidate, re.I | re.S)
+        if not match:
+            raise AppError("Не удалось прочитать ответ модели. Повторите уточнение.")
+        candidate = match.group(1).strip()
+    try:
+        payload = json.loads(candidate)
+    except (ValueError, TypeError):
+        if fenced or candidate.startswith('{') or re.match(r'^\[\s*\{', candidate):
+            raise AppError("Не удалось прочитать ответ модели. Повторите уточнение.")
+        return answer
+
+    def extract(value):
+        if isinstance(value, dict):
+            if 'text' in value:
+                if not isinstance(value['text'], str):
+                    raise ValueError('text')
+                return [value['text']]
+            for key in ('regions', 'blocks'):
+                if key in value:
+                    return extract(value[key])
+            raise ValueError('missing text')
+        if isinstance(value, list) and value:
+            return [text for item in value for text in extract(item)]
+        raise ValueError('invalid structure')
+
+    if not isinstance(payload, (dict, list)) and not fenced:
+        return answer
+    try:
+        return '\n'.join(extract(payload))
+    except ValueError as exc:
+        raise AppError("В ответе модели не найден текст. Повторите уточнение.") from exc
 
 
 class LayoutRecognitionService:
@@ -87,8 +128,10 @@ class LayoutRecognitionService:
                 output = io.BytesIO()
                 rotated.save(output, "PNG")
                 data = output.getvalue()
-        return self.model.recognize(
+        answer = self.model.recognize(
             Page(data, page.source, page.number),
             "Прочитай только этот участок. Он повёрнут для удобства чтения. "
-            "Сохраняй язык, имена, числа и переносы; не дописывай по смыслу.",
+            "Сохраняй язык, имена, числа и переносы; не дописывай по смыслу. "
+            "Верни только распознанный текст, без JSON, координат и пояснений.",
         )
+        return refinement_text(answer)
